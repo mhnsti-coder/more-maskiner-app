@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck } from 'lucide-react';
+import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2 } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld' };
@@ -38,6 +38,7 @@ export default function App() {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState('seller');
   const [adminBusy, setAdminBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isAdmin = currentProfile?.role === 'admin';
 
@@ -72,7 +73,7 @@ export default function App() {
   async function loadMachines() {
     if (!session) return;
     setLoading(true); setError('');
-    const { data, error } = await supabase.from('machines').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('machines').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
     if (error) setError(error.message); else setMachines(data || []);
     setLoading(false);
   }
@@ -148,6 +149,18 @@ export default function App() {
     setError('');
     const { error } = await supabase.from('machines').update({ status }).eq('id', machine.id);
     if (error) setError(error.message); else { setSelected(null); await loadMachines(); }
+  }
+
+  async function deleteMachine() {
+    if (!isAdmin || !selected || deleteBusy) return;
+    const machineName = [selected.brand, selected.model].filter(Boolean).join(' ') || selected.machine_number || 'den här maskinen';
+    const confirmed = window.confirm(`Vill du ta bort ${machineName} från maskinlistan? Maskinen försvinner, men kommentarer och historik sparas.`);
+    if (!confirmed) return;
+    setDeleteBusy(true); setError('');
+    const { error } = await supabase.from('machines').update({ is_deleted: true }).eq('id', selected.id);
+    if (error) { setError('Maskinen kunde inte tas bort: ' + error.message); }
+    else { setSelected(null); await loadMachines(); }
+    setDeleteBusy(false);
   }
 
   async function createReservation(event) {
@@ -228,6 +241,7 @@ export default function App() {
       {selected.status === 'sold' && <div className="dialog-actions"><button onClick={() => changeStatus(selected,'in_stock')}>Återställ till I lager</button></div>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
       <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
+      {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
     {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
