@@ -22,6 +22,11 @@ export default function App() {
   const [showReservation, setShowReservation] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordFlow, setPasswordFlow] = useState(''); // setup | recovery | forgot
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordNotice, setPasswordNotice] = useState('');
   const [form, setForm] = useState(emptyForm);
   const [customerName, setCustomerName] = useState('');
   const [reservedBy, setReservedBy] = useState('');
@@ -36,10 +41,32 @@ export default function App() {
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isAdmin = currentProfile?.role === 'admin';
 
+  function needsPasswordSetup(user) {
+    if (!user) return false;
+    if (user.user_metadata?.must_set_password === false) return false;
+    return user.user_metadata?.must_set_password === true || Boolean(user.invited_at);
+  }
+
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, value) => setSession(value));
-    return () => listener.subscription.unsubscribe();
+    let alive = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!alive) return;
+      setSession(data.session);
+      if (data.session?.user && needsPasswordSetup(data.session.user)) setPasswordFlow('setup');
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((event, value) => {
+      setSession(value);
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordFlow('recovery');
+        setPasswordNotice('Välj ett nytt lösenord.');
+      } else if (event === 'SIGNED_IN' && value?.user && needsPasswordSetup(value.user)) {
+        setPasswordFlow('setup');
+        setPasswordNotice('Välkommen! Skapa ett personligt lösenord för ditt konto.');
+      } else if (event === 'SIGNED_OUT') {
+        setPasswordFlow('');
+      }
+    });
+    return () => { alive = false; listener.subscription.unsubscribe(); };
   }, []);
 
   async function loadMachines() {
@@ -64,11 +91,38 @@ export default function App() {
   }), [machines, search, filter]);
 
   async function signIn(event) {
-    event.preventDefault(); setError('');
+    event.preventDefault(); setError(''); setPasswordNotice('');
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setError(error.message);
   }
-  async function signOut() { await supabase.auth.signOut(); setMachines([]); setSelected(null); }
+
+  async function requestPasswordReset(event) {
+    event.preventDefault(); setError(''); setPasswordNotice(''); setPasswordBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+    if (error) setError(error.message);
+    else setPasswordNotice('Om adressen finns registrerad har ett mejl med återställningslänk skickats.');
+    setPasswordBusy(false);
+  }
+
+  async function saveNewPassword(event) {
+    event.preventDefault(); setError(''); setPasswordNotice('');
+    if (newPassword.length < 8) { setError('Lösenordet måste innehålla minst 8 tecken.'); return; }
+    if (newPassword !== confirmPassword) { setError('Lösenorden stämmer inte överens.'); return; }
+    setPasswordBusy(true);
+    const { data, error } = await supabase.auth.updateUser({
+      password: newPassword,
+      data: { ...(session?.user?.user_metadata || {}), must_set_password: false }
+    });
+    if (error) setError(error.message);
+    else {
+      setSession(current => current ? { ...current, user: data.user } : current);
+      setPasswordFlow(''); setNewPassword(''); setConfirmPassword('');
+      setPasswordNotice('Ditt lösenord är sparat. Välkommen!');
+    }
+    setPasswordBusy(false);
+  }
+
+  async function signOut() { await supabase.auth.signOut(); setMachines([]); setSelected(null); setPasswordFlow(''); }
 
   async function addMachine(event) {
     event.preventDefault(); setError('');
@@ -156,7 +210,9 @@ export default function App() {
   const date = value => value ? new Date(value).toLocaleDateString('sv-SE') : '–';
   const dateTime = value => value ? new Date(value).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '';
 
-  if (!session) return <main className="login"><div className="brand">MÖRE<span /></div><section className="login-card"><p className="eyebrow">INTERNT MASKINREGISTER</p><h1>Välkommen</h1><p className="muted">Logga in med ditt personliga konto.</p><form onSubmit={signIn}><label>E-post<input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><label>Lösenord<input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label><button className="primary wide">Logga in</button></form>{error && <p className="error">{error}</p>}</section></main>;
+  if (session && passwordFlow) return <main className="login"><div className="brand">MÖRE<span /></div><section className="login-card"><p className="eyebrow">KONTOINSTÄLLNING</p><h1>{passwordFlow === 'recovery' ? 'Nytt lösenord' : 'Skapa ditt lösenord'}</h1><p className="muted">{passwordNotice || 'Välj ett personligt lösenord för ditt konto.'}</p><form onSubmit={saveNewPassword}><label>Nytt lösenord<input type="password" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={8} required /></label><label>Bekräfta lösenord<input type="password" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} minLength={8} required /></label><button className="primary wide" disabled={passwordBusy}>{passwordBusy ? 'Sparar…' : 'Spara lösenord'}</button></form>{error && <p className="error">{error}</p>}</section></main>;
+
+  if (!session) return <main className="login"><div className="brand">MÖRE<span /></div><section className="login-card"><p className="eyebrow">INTERNT MASKINREGISTER</p><h1>{passwordFlow === 'forgot' ? 'Återställ lösenord' : 'Välkommen'}</h1><p className="muted">{passwordFlow === 'forgot' ? 'Ange din e-postadress så skickar vi en återställningslänk.' : 'Logga in med ditt personliga konto.'}</p>{passwordFlow === 'forgot' ? <form onSubmit={requestPasswordReset}><label>E-post<input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><button className="primary wide" disabled={passwordBusy}>{passwordBusy ? 'Skickar…' : 'Skicka återställningslänk'}</button><button type="button" className="wide" style={{ background: "transparent", color: "#ddd", border: "1px solid #444", borderRadius: 7, padding: 11 }} onClick={() => { setPasswordFlow(''); setError(''); setPasswordNotice(''); }}>Tillbaka till inloggning</button></form> : <form onSubmit={signIn}><label>E-post<input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><label>Lösenord<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label><button className="primary wide">Logga in</button><button type="button" className="wide" style={{ background: "transparent", color: "#ddd", border: "1px solid #444", borderRadius: 7, padding: 11 }} onClick={() => { setPasswordFlow('forgot'); setError(''); setPasswordNotice(''); }}>Glömt lösenord?</button></form>}{passwordNotice && <p className="muted">{passwordNotice}</p>}{error && <p className="error">{error}</p>}</section></main>;
 
   return <main className="app-shell">
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setError(''); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
