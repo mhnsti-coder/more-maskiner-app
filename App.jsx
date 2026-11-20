@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2 } from 'lucide-react';
+import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld' };
@@ -38,7 +38,16 @@ export default function App() {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState('seller');
   const [adminBusy, setAdminBusy] = useState(false);
+  const [recoveryEmail, setRecoveryEmail] = useState('');
+  const [recoveryLink, setRecoveryLink] = useState('');
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [announcements, setAnnouncements] = useState([]);
+  const [announcementComments, setAnnouncementComments] = useState({});
+  const [announcementText, setAnnouncementText] = useState({ title: '', body: '', category: 'Information', is_important: false });
+  const [announcementCommentText, setAnnouncementCommentText] = useState({});
+  const [announcementBusy, setAnnouncementBusy] = useState(false);
+  const [showAnnouncementForm, setShowAnnouncementForm] = useState(false);
+  const [showInternInfo, setShowInternInfo] = useState(false);
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isAdmin = currentProfile?.role === 'admin';
 
@@ -78,12 +87,60 @@ export default function App() {
     setLoading(false);
   }
 
+  async function loadAnnouncements() {
+    if (!session) return;
+    const { data, error } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
+    if (error) { setError('Kunde inte hämta Interninfo: ' + error.message); return; }
+    setAnnouncements(data || []);
+    if (data?.length) {
+      const ids = data.map(item => item.id);
+      const { data: commentsData, error: commentsError } = await supabase.from('announcement_comments').select('*').in('announcement_id', ids).order('created_at', { ascending: true });
+      if (commentsError) setError('Kunde inte hämta kommentarer: ' + commentsError.message);
+      else {
+        const grouped = {};
+        (commentsData || []).forEach(item => { (grouped[item.announcement_id] ||= []).push(item); });
+        setAnnouncementComments(grouped);
+      }
+    } else setAnnouncementComments({});
+  }
+
+  async function publishAnnouncement(event) {
+    event.preventDefault();
+    if (!announcementText.title.trim() || !announcementText.body.trim()) return;
+    setAnnouncementBusy(true); setError('');
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase.from('announcements').insert({
+      title: announcementText.title.trim(), body: announcementText.body.trim(),
+      category: announcementText.category, is_important: announcementText.is_important, created_by: user.id
+    });
+    if (error) setError('Kunde inte publicera: ' + error.message);
+    else {
+      setAnnouncementText({ title: '', body: '', category: 'Information', is_important: false });
+      setShowAnnouncementForm(false);
+      await loadAnnouncements();
+    }
+    setAnnouncementBusy(false);
+  }
+
+  async function addAnnouncementComment(event, announcementId) {
+    event.preventDefault();
+    const message = (announcementCommentText[announcementId] || '').trim();
+    if (!message) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase.from('announcement_comments').insert({ announcement_id: announcementId, user_id: user.id, message });
+    if (error) setError('Kunde inte spara kommentaren: ' + error.message);
+    else {
+      setAnnouncementCommentText(current => ({ ...current, [announcementId]: '' }));
+      await loadAnnouncements();
+    }
+  }
+
   async function loadProfiles() {
     const { data, error } = await supabase.from('profiles').select('*').order('full_name');
     if (error) setError(error.message); else setProfiles(data || []);
   }
 
-  useEffect(() => { if (session) { loadMachines(); loadProfiles(); } }, [session]);
+  useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); } }, [session]);
 
   const filtered = useMemo(() => machines.filter(m => {
     const q = search.toLowerCase();
@@ -220,6 +277,22 @@ export default function App() {
     setAdminBusy(false);
   }
 
+  async function createRecoveryLink(event) {
+    event.preventDefault();
+    setAdminBusy(true); setError(''); setRecoveryLink('');
+    const { data, error } = await supabase.functions.invoke('admin-users', {
+      body: { action: 'recovery_link', email: recoveryEmail.trim() }
+    });
+    if (error || data?.error) {
+      setError(data?.error || error.message || 'Kunde inte skapa återställningslänk.');
+    } else if (data?.action_link) {
+      setRecoveryLink(data.action_link);
+    } else {
+      setError('Supabase returnerade ingen återställningslänk.');
+    }
+    setAdminBusy(false);
+  }
+
   const date = value => value ? new Date(value).toLocaleDateString('sv-SE') : '–';
   const dateTime = value => value ? new Date(value).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '';
 
@@ -229,6 +302,12 @@ export default function App() {
 
   return <main className="app-shell">
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setError(''); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <nav className="main-tabs"><button className={!showInternInfo ? 'active' : ''} onClick={() => setShowInternInfo(false)}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={() => { setShowInternInfo(true); loadAnnouncements(); }}><Megaphone size={16} /> Interninfo</button></nav>
+    {showInternInfo ? <>
+      <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></section>
+      {showAnnouncementForm && <section className="dialog announcement-compose"><h2>Nytt inlägg</h2><form className="machine-form" onSubmit={publishAnnouncement}><label className="full">Rubrik<input value={announcementText.title} onChange={e => setAnnouncementText(v => ({ ...v, title: e.target.value }))} required maxLength={140} placeholder="Vad gäller informationen?" /></label><label className="full">Kategori<select value={announcementText.category} onChange={e => setAnnouncementText(v => ({ ...v, category: e.target.value }))}><option>Information</option><option>Nyhet</option><option>Driftinformation</option><option>Viktigt</option></select></label><label className="full">Meddelande<textarea rows={5} value={announcementText.body} onChange={e => setAnnouncementText(v => ({ ...v, body: e.target.value }))} required placeholder="Skriv informationen här…" /></label><label className="full checkbox-line"><input type="checkbox" checked={announcementText.is_important} onChange={e => setAnnouncementText(v => ({ ...v, is_important: e.target.checked }))} /> Markera som viktig information</label><button className="primary wide" disabled={announcementBusy}>{announcementBusy ? 'Publicerar…' : 'Publicera'}</button><button type="button" className="wide" onClick={() => setShowAnnouncementForm(false)}>Avbryt</button></form></section>}
+      {announcements.length === 0 ? <div className="empty"><Megaphone size={32} /><h3>Ingen intern information ännu</h3><p>Här visas nyheter och meddelanden från medarbetarna.</p></div> : <section className="announcement-list">{announcements.map(item => <article className="dialog announcement-card" key={item.id}><div className="announcement-meta"><span>{item.category || 'Information'}</span><small>{dateTime(item.created_at)}</small></div>{item.is_important && <p className="important-label"><AlertCircle size={15} /> Viktig information</p>}<h2>{item.title}</h2><p className="announcement-body">{item.body}</p><div className="detail-section"><h3><MessageSquare size={17} /> Kommentarer ({(announcementComments[item.id] || []).length})</h3>{(announcementComments[item.id] || []).map(comment => <div className="comment-item" key={comment.id}><p>{comment.message}</p><small>{profiles.find(profile => profile.id === comment.user_id)?.full_name || 'Medarbetare'} · {dateTime(comment.created_at)}</small></div>)}<form className="comment-form" onSubmit={event => addAnnouncementComment(event, item.id)}><textarea rows={2} placeholder="Skriv en kommentar eller fråga…" value={announcementCommentText[item.id] || ''} onChange={e => setAnnouncementCommentText(v => ({ ...v, [item.id]: e.target.value }))} required /><button className="primary" disabled={!(announcementCommentText[item.id] || '').trim()}><Send size={16} /> Skicka</button></form></div></article>)}</section>}
+    </> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => setShowAdd(true)}><Plus size={18} /> Lägg till maskin</button></section>
     <section className="stats"><div><Package /><strong>{machines.length}</strong><span>Totalt</span></div><div><Tag /><strong>{machines.filter(m => m.status === 'in_stock').length}</strong><span>I lager</span></div><div><Clock3 /><strong>{machines.filter(m => m.status === 'reserved').length}</strong><span>Reserverade</span></div><div><CheckCircle2 /><strong>{machines.filter(m => m.status === 'sold').length}</strong><span>Sålda</span></div></section>
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filters">{[['all','Alla'],['in_stock','I lager'],['reserved','Reserverade'],['sold','Sålda']].map(([value,label]) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{label}</button>)}</div></section>
@@ -246,8 +325,9 @@ export default function App() {
 
     {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
-    {showAdmin && isAdmin && <div className="overlay" onClick={() => setShowAdmin(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdmin(false)}><X /></button><p className="eyebrow">ADMINISTRATION</p><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Personal i systemet</h3>{profiles.map(profile => <div className="history-item" key={profile.id}><strong>{profile.full_name || 'Namn saknas'}</strong><small>{profile.role === 'admin' ? 'Administratör' : 'Säljare'}</small></div>)}</div></section></div>}
+    {showAdmin && isAdmin && <div className="overlay" onClick={() => setShowAdmin(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdmin(false)}><X /></button><p className="eyebrow">ADMINISTRATION</p><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><h3><ShieldCheck size={18} /> Personal i systemet</h3>{profiles.map(profile => <div className="history-item" key={profile.id}><strong>{profile.full_name || 'Namn saknas'}</strong><small>{profile.role === 'admin' ? 'Administratör' : 'Säljare'}</small></div>)}</div></section></div>}
 
     {showAdd && <div className="overlay" onClick={() => setShowAdd(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdd(false)}><X /></button><p className="eyebrow">NY MASKIN</p><h2>Lägg till maskin</h2><form className="machine-form" onSubmit={addMachine}>{[['machine_number','Maskinnummer'],['brand','Fabrikat'],['model','Modell'],['year','Årsmodell'],['hours','Timmar'],['price','Pris (kr)']].map(([field,label]) => <label key={field}>{label}<input value={form[field]} type={['year','hours','price'].includes(field) ? 'number' : 'text'} onChange={e => setForm({ ...form, [field]: e.target.value })} /></label>)}<label className="full">Beskrivning<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><button className="primary wide">Spara maskin</button></form></section></div>}
+    </>}
   </main>;
 }
