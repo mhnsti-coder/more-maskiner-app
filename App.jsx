@@ -1057,10 +1057,11 @@ export default function App() {
       .admin-refresh-button:disabled{opacity:.55;cursor:wait}
       .auth-activity-section{margin-top:18px;padding-top:16px;border-top:1px solid #333}
       .auth-activity-list{margin-top:12px}
-      .auth-activity-row{display:flex;align-items:center;gap:11px;padding:11px 0;border-bottom:1px solid #333}
+      .auth-activity-row{display:grid;grid-template-columns:32px minmax(0,1fr);align-items:center;column-gap:12px;min-height:58px;padding:11px 0;border-bottom:1px solid #333}
       .auth-activity-row>div{display:flex;flex-direction:column;gap:3px;min-width:0}
-      .auth-activity-row small{color:#999}
-      .auth-activity-icon{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;flex:none}
+      .auth-activity-row small{color:#999;line-height:1.4}
+      .auth-activity-icon{box-sizing:border-box!important;display:grid!important;place-items:center!important;width:32px!important;height:32px!important;min-width:32px!important;min-height:32px!important;max-width:32px!important;max-height:32px!important;aspect-ratio:1/1;align-self:center;justify-self:center;overflow:hidden;border-radius:50%;flex:none}
+      .auth-activity-icon svg{display:block;width:16px;height:16px}
       .auth-activity-icon.login{color:#75d69a;background:#183323}
       .auth-activity-icon.logout{color:#aaa;background:#292929}
       .machine-photo img{width:100%;height:100%;object-fit:cover;border-radius:10px}
