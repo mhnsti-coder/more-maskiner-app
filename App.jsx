@@ -61,6 +61,8 @@ export default function App() {
   const [announcementText, setAnnouncementText] = useState({ title: '', body: '', category: 'Information', is_important: false });
   const [announcementCommentText, setAnnouncementCommentText] = useState({});
   const [announcementBusy, setAnnouncementBusy] = useState(false);
+  const [showDeletedAnnouncements, setShowDeletedAnnouncements] = useState(false);
+  const [announcementDeleteBusy, setAnnouncementDeleteBusy] = useState(false);
   const [showAnnouncementForm, setShowAnnouncementForm] = useState(false);
   const [showInternInfo, setShowInternInfo] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -247,11 +249,12 @@ export default function App() {
     setLoading(false);
   }
 
-  async function loadAnnouncements() {
+  async function loadAnnouncements(showDeleted = showDeletedAnnouncements) {
     if (!session) return;
-    const { data, error } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
+    let announcementQuery = supabase.from('announcements').select('*').order('created_at', { ascending: false });
+    if (!(isAdmin && showDeleted)) announcementQuery = announcementQuery.is('deleted_at', null);
+    const { data, error } = await announcementQuery;
     if (error) { setError('Kunde inte hämta Interninfo: ' + error.message); return; }
-    setAnnouncements(data || []);
     if (data?.length) {
       const ids = data.map(item => item.id);
       const [{ data: commentsData, error: commentsError }, { data: attachmentRows, error: attachmentError }] = await Promise.all([
@@ -264,6 +267,10 @@ export default function App() {
         (commentsData || []).forEach(item => { (grouped[item.announcement_id] ||= []).push(item); });
         setAnnouncementComments(grouped);
       }
+      const visibleAnnouncements = isAdmin && showDeleted
+        ? data.filter(post => post.deleted_at || (commentsData || []).some(comment => comment.announcement_id === post.id && comment.deleted_at))
+        : data;
+      setAnnouncements(visibleAnnouncements || []);
       if (attachmentError) {
         setError('Kunde inte hämta bilagor: ' + attachmentError.message);
         setAnnouncementAttachments({});
@@ -280,6 +287,7 @@ export default function App() {
         setAnnouncementAttachments(groupedAttachments);
       }
     } else {
+      setAnnouncements([]);
       setAnnouncementComments({});
       setAnnouncementAttachments({});
     }
@@ -365,6 +373,26 @@ export default function App() {
       }
     }
     setAnnouncementBusy(false);
+  }
+
+  async function setAnnouncementDeleted(item, deleted) {
+    const action = deleted ? 'ta bort' : 'återställa';
+    if (!window.confirm(`Vill du ${action} inlägget \"${item.title}\"? ${deleted ? 'Inlägget döljs för personalen men kan återställas av admin.' : 'Inlägget blir synligt för personalen igen.'}`)) return;
+    setAnnouncementDeleteBusy(true); setError('');
+    const { error } = await supabase.rpc('admin_set_announcement_deleted', { p_announcement_id: item.id, p_deleted: deleted });
+    if (error) setError(`Kunde inte ${action} inlägget: ` + error.message);
+    else await loadAnnouncements();
+    setAnnouncementDeleteBusy(false);
+  }
+
+  async function setAnnouncementCommentDeleted(comment, deleted) {
+    const action = deleted ? 'ta bort' : 'återställa';
+    if (!window.confirm(`Vill du ${action} den här kommentaren?`)) return;
+    setAnnouncementDeleteBusy(true); setError('');
+    const { error } = await supabase.rpc('admin_set_announcement_comment_deleted', { p_comment_id: comment.id, p_deleted: deleted });
+    if (error) setError(`Kunde inte ${action} kommentaren: ` + error.message);
+    else await loadAnnouncements();
+    setAnnouncementDeleteBusy(false);
   }
 
   async function addAnnouncementComment(event, announcementId) {
@@ -672,15 +700,6 @@ export default function App() {
 
   return <main className="app-shell">
     <style>{`
-      /* Stabil mobilvy i iOS/PWA: håll innehållet inom enhetens faktiska bredd. */
-      html,body,#root{width:100%;min-width:0;min-height:100%;margin:0}
-      html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
-      body{overflow-x:hidden}
-      .app-shell{width:100%;max-width:1200px;margin:0 auto;box-sizing:border-box;min-width:0}
-      .app-shell,.app-shell *,.app-shell *::before,.app-shell *::after{box-sizing:border-box}
-      .app-shell .topbar,.app-shell .top-actions,.app-shell .hero,.app-shell .main-tabs,.app-shell .toolbar{min-width:0;max-width:100%}
-      .app-shell input,.app-shell textarea,.app-shell select{font-size:16px;max-width:100%}
-      .app-shell img{max-width:100%}
       .main-tabs{display:flex;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
@@ -733,9 +752,9 @@ export default function App() {
     <nav className="main-tabs"><button className={!showInternInfo ? 'active' : ''} onClick={() => setShowInternInfo(false)}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={() => { setShowInternInfo(true); loadAnnouncements(); }}><Megaphone size={16} /> Interninfo</button></nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {showInternInfo ? <>
-      <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></section>
+      <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>{isAdmin && <button type="button" onClick={() => { const next = !showDeletedAnnouncements; setShowDeletedAnnouncements(next); loadAnnouncements(next); }}>{showDeletedAnnouncements ? 'Visa aktiva inlägg' : 'Visa borttagna'}</button>}<button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></div></section>
       {showAnnouncementForm && <section className="dialog announcement-compose"><h2>Nytt inlägg</h2><form className="machine-form" onSubmit={publishAnnouncement}><label className="full">Rubrik<input value={announcementText.title} onChange={e => setAnnouncementText(v => ({ ...v, title: e.target.value }))} required maxLength={140} placeholder="Vad gäller informationen?" /></label><label className="full">Kategori<select value={announcementText.category} onChange={e => setAnnouncementText(v => ({ ...v, category: e.target.value }))}><option>Information</option><option>Nyhet</option><option>Driftinformation</option><option>Viktigt</option></select></label><label className="full">Meddelande<textarea rows={5} value={announcementText.body} onChange={e => setAnnouncementText(v => ({ ...v, body: e.target.value }))} required placeholder="Skriv informationen här…" /></label><label className="full checkbox-line"><input type="checkbox" checked={announcementText.is_important} onChange={e => setAnnouncementText(v => ({ ...v, is_important: e.target.checked }))} /> Markera som viktig information</label><div className="full announcement-file-picker"><label className="button" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: announcementBusy ? 'wait' : 'pointer' }}><Paperclip size={16} /> Lägg till bilagor<input type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" onChange={e => { const picked = Array.from(e.target.files || []); setAnnouncementFiles(current => [...current, ...picked].slice(0, 5)); e.target.value = ''; }} disabled={announcementBusy} style={{ display: 'none' }} /></label><small className="muted">Max 5 filer, 15 MB per fil. Bilder, PDF och Office-dokument.</small>{announcementFiles.length > 0 && <div className="announcement-file-list">{announcementFiles.map((file, index) => <span key={`${file.name}-${file.size}-${index}`}><FileText size={14} /> {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB) <button type="button" onClick={() => setAnnouncementFiles(current => current.filter((_, i) => i !== index))} disabled={announcementBusy} aria-label={`Ta bort ${file.name}`}><X size={14} /></button></span>)}</div>}</div><button className="primary wide" disabled={announcementBusy}>{announcementBusy ? 'Publicerar…' : 'Publicera'}</button><button type="button" className="wide" onClick={() => setShowAnnouncementForm(false)}>Avbryt</button></form></section>}
-      {announcements.length === 0 ? <div className="empty"><Megaphone size={32} /><h3>Ingen intern information ännu</h3><p>Här visas nyheter och meddelanden från medarbetarna.</p></div> : <section className="announcement-list">{announcements.map(item => <article className="dialog announcement-card" key={item.id}><div className="announcement-meta"><span>{item.category || 'Information'}</span><small>{dateTime(item.created_at)}</small></div><div className="announcement-author"><span>Publicerat av</span><strong>{profiles.find(profile => profile.id === item.created_by)?.full_name || 'Medarbetare'}</strong></div>{item.is_important && <p className="important-label"><AlertCircle size={15} /> Viktig information</p>}<h2>{item.title}</h2><p className="announcement-body">{item.body}</p>{(announcementAttachments[item.id] || []).length > 0 && <div className="announcement-attachments"><strong><Paperclip size={15} style={{ verticalAlign: 'middle' }} /> Bilagor</strong>{announcementAttachments[item.id].map(file => <a className="announcement-attachment" key={file.id} href={file.signedUrl || undefined} target="_blank" rel="noreferrer" onClick={e => { if (!file.signedUrl) { e.preventDefault(); setError('Bilagan kunde inte öppnas. Uppdatera Interninfo och försök igen.'); } }}><FileText size={17} /><span>{file.file_name}</span><small>{(file.file_size / 1024 / 1024).toFixed(1)} MB</small><Download size={15} /></a>)}</div>}<div className="detail-section"><h3><MessageSquare size={17} /> Kommentarer ({(announcementComments[item.id] || []).length})</h3>{(announcementComments[item.id] || []).map(comment => <div className="comment-item" key={comment.id}><p>{comment.message}</p><small>{profiles.find(profile => profile.id === comment.user_id)?.full_name || 'Medarbetare'} · {dateTime(comment.created_at)}</small></div>)}<form className="comment-form" onSubmit={event => addAnnouncementComment(event, item.id)}><textarea rows={2} placeholder="Skriv en kommentar eller fråga…" value={announcementCommentText[item.id] || ''} onChange={e => setAnnouncementCommentText(v => ({ ...v, [item.id]: e.target.value }))} required /><button className="primary" disabled={!(announcementCommentText[item.id] || '').trim()}><Send size={16} /> Skicka</button></form></div></article>)}</section>}
+      {announcements.length === 0 ? <div className="empty"><Megaphone size={32} /><h3>{showDeletedAnnouncements ? 'Inga borttagna inlägg' : 'Ingen intern information ännu'}</h3><p>{showDeletedAnnouncements ? 'Det finns inga borttagna inlägg att återställa.' : 'Här visas nyheter och meddelanden från medarbetarna.'}</p></div> : <section className="announcement-list">{announcements.map(item => <article className="dialog announcement-card" key={item.id}><div className="announcement-meta"><span>{item.category || 'Information'}{item.deleted_at ? ' · BORTTAGET' : ''}</span><small>{dateTime(item.created_at)}</small></div><div className="announcement-author"><span>Publicerat av</span><strong>{profiles.find(profile => profile.id === item.created_by)?.full_name || 'Medarbetare'}</strong></div>{item.is_important && <p className="important-label"><AlertCircle size={15} /> Viktig information</p>}<h2>{item.title}</h2><p className="announcement-body">{item.body}</p>{isAdmin && <div className="dialog-actions" style={{marginTop:12}}>{item.deleted_at ? <button type="button" className="primary" onClick={() => setAnnouncementDeleted(item, false)} disabled={announcementDeleteBusy}><RefreshCw size={15} /> Återställ inlägg</button> : <button type="button" onClick={() => setAnnouncementDeleted(item, true)} disabled={announcementDeleteBusy} style={{color:'#f08080'}}><Trash2 size={15} /> Ta bort inlägg</button>}</div>}{(announcementAttachments[item.id] || []).length > 0 && <div className="announcement-attachments"><strong><Paperclip size={15} style={{ verticalAlign: 'middle' }} /> Bilagor</strong>{announcementAttachments[item.id].map(file => <a className="announcement-attachment" key={file.id} href={file.signedUrl || undefined} target="_blank" rel="noreferrer" onClick={e => { if (!file.signedUrl) { e.preventDefault(); setError('Bilagan kunde inte öppnas. Uppdatera Interninfo och försök igen.'); } }}><FileText size={17} /><span>{file.file_name}</span><small>{(file.file_size / 1024 / 1024).toFixed(1)} MB</small><Download size={15} /></a>)}</div>}<div className="detail-section"><h3><MessageSquare size={17} /> Kommentarer ({(announcementComments[item.id] || []).length})</h3>{(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).map(comment => <div className="comment-item" key={comment.id} style={comment.deleted_at ? {opacity:0.65,borderLeft:'3px solid #a33',paddingLeft:10} : undefined}><p>{comment.message}</p><small>{profiles.find(profile => profile.id === comment.user_id)?.full_name || 'Medarbetare'} · {dateTime(comment.created_at)}{comment.deleted_at ? ' · BORTTAGEN' : ''}</small>{isAdmin && <button type="button" onClick={() => setAnnouncementCommentDeleted(comment, !comment.deleted_at)} disabled={announcementDeleteBusy} style={{marginTop:6}}>{comment.deleted_at ? <><RefreshCw size={14}/> Återställ kommentar</> : <><Trash2 size={14}/> Ta bort kommentar</>}</button>}</div>)}{!showDeletedAnnouncements && !item.deleted_at && <form className="comment-form" onSubmit={event => addAnnouncementComment(event, item.id)}><textarea rows={2} placeholder="Skriv en kommentar eller fråga…" value={announcementCommentText[item.id] || ''} onChange={e => setAnnouncementCommentText(v => ({ ...v, [item.id]: e.target.value }))} required /><button className="primary" disabled={!(announcementCommentText[item.id] || '').trim()}><Send size={16} /> Skicka</button></form>}</div></article>)}</section>}
     </> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => setShowAdd(true)}><Plus size={18} /> Lägg till maskin</button></section>
     <section className="stats"><div><Package /><strong>{machines.length}</strong><span>Totalt</span></div><div><Tag /><strong>{machines.filter(m => m.status === 'in_stock').length}</strong><span>I lager</span></div><div><Clock3 /><strong>{machines.filter(m => m.status === 'reserved').length}</strong><span>Reserverade</span></div><div><CheckCircle2 /><strong>{machines.filter(m => m.status === 'sold').length}</strong><span>Sålda</span></div></section>
