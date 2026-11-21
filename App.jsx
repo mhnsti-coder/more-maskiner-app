@@ -34,6 +34,7 @@ export default function App() {
   const [showAuthActivity, setShowAuthActivity] = useState(false);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
+  const [showMachineHistory, setShowMachineHistory] = useState(false);
   const [machinePhotos, setMachinePhotos] = useState([]);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState(null);
@@ -631,6 +632,7 @@ export default function App() {
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
     setSelected(machine);
+    setShowMachineHistory(false);
     setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
     const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
@@ -1326,7 +1328,7 @@ export default function App() {
       )}
       {isSoldContext && Number(selected.sold_quantity || 0) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{Number(selected.sold_quantity || 0)} st</strong></p><button onClick={restoreSoldMachine} disabled={saving}>Ångra försäljning – återför 1 till lagret</button></section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
-      <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
+      <div className="detail-section"><button type="button" className="admin-refresh-button" onClick={() => setShowMachineHistory(value => !value)}><History size={18} /> {showMachineHistory ? 'Dölj historik' : 'Visa historik'}</button>{showMachineHistory && <div className="machine-history-list"><h3>Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
