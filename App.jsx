@@ -1,10 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle } from 'lucide-react';
+import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld' };
 const emptyForm = { machine_number: '', brand: '', model: '', year: '', hours: '', price: '', description: '' };
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map(char => char.charCodeAt(0)));
+}
 
 export default function App() {
   const [session, setSession] = useState(null);
@@ -51,6 +59,9 @@ export default function App() {
   const [announcementBusy, setAnnouncementBusy] = useState(false);
   const [showAnnouncementForm, setShowAnnouncementForm] = useState(false);
   const [showInternInfo, setShowInternInfo] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMessage, setPushMessage] = useState('');
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isAdmin = currentProfile?.role === 'admin';
 
@@ -81,6 +92,108 @@ export default function App() {
     });
     return () => { alive = false; listener.subscription.unsubscribe(); };
   }, []);
+
+  async function refreshPushStatus() {
+    if (!session?.user?.id || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushEnabled(false);
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.getRegistration('/')
+        || await navigator.serviceWorker.register('/sw.js');
+      const subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        setPushEnabled(false);
+        return;
+      }
+      const { data, error } = await supabase
+        .from('push_subscriptions')
+        .select('id')
+        .eq('endpoint', subscription.endpoint)
+        .maybeSingle();
+      setPushEnabled(!error && Boolean(data));
+    } catch {
+      setPushEnabled(false);
+    }
+  }
+
+  async function enablePushNotifications() {
+    // Permission prompts must be initiated directly by the user's button press.
+    if (pushBusy || pushEnabled) return;
+    setPushBusy(true);
+    setPushMessage('');
+    try {
+      if (!session?.user?.id) throw new Error('Du måste vara inloggad för att aktivera notiser.');
+      if (!VAPID_PUBLIC_KEY) throw new Error('Pushnyckeln saknas i appens miljöinställningar (VITE_VAPID_PUBLIC_KEY).');
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        throw new Error('Den här webbläsaren stöder inte pushnotiser.');
+      }
+
+      const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+        || window.navigator.standalone === true;
+      const isIOS = /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+      if (isIOS && !isStandalone) {
+        throw new Error('På iPhone behöver MÖRE först läggas till på hemskärmen och öppnas därifrån innan notiser kan aktiveras.');
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        throw new Error(permission === 'denied'
+          ? 'Notiser är blockerade i telefonens inställningar. Tillåt notiser för MÖRE och försök igen.'
+          : 'Du valde att inte tillåta notiser.');
+      }
+
+      const registration = await navigator.serviceWorker.getRegistration('/')
+        || await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
+      }
+
+      const subscriptionJson = subscription.toJSON();
+      const keys = subscriptionJson.keys || {};
+      if (!subscriptionJson.endpoint || !keys.p256dh || !keys.auth) {
+        throw new Error('Telefonens pushprenumeration kunde inte läsas. Försök igen.');
+      }
+
+      const subscriptionRow = {
+        user_id: session.user.id,
+        endpoint: subscriptionJson.endpoint,
+        p256dh: keys.p256dh,
+        auth: keys.auth
+      };
+      const { data: existing, error: lookupError } = await supabase
+        .from('push_subscriptions')
+        .select('id')
+        .eq('endpoint', subscriptionJson.endpoint)
+        .maybeSingle();
+      if (lookupError) throw new Error('Kunde inte kontrollera pushprenumerationen: ' + lookupError.message);
+
+      const saveResult = existing
+        ? await supabase.from('push_subscriptions').update(subscriptionRow).eq('id', existing.id)
+        : await supabase.from('push_subscriptions').insert(subscriptionRow);
+      if (saveResult.error) throw new Error('Kunde inte spara notisinställningen: ' + saveResult.error.message);
+
+      setPushEnabled(true);
+      setPushMessage('Notiser är aktiverade på den här enheten.');
+    } catch (err) {
+      setPushMessage(err?.message || 'Det gick inte att aktivera notiser.');
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (session?.user?.id) refreshPushStatus();
+    else {
+      setPushEnabled(false);
+      setPushMessage('');
+    }
+  }, [session?.user?.id]);
 
   async function loadMachines() {
     if (!session) return;
@@ -132,15 +245,27 @@ export default function App() {
     if (!announcementText.title.trim() || !announcementText.body.trim()) return;
     setAnnouncementBusy(true); setError('');
     const { data: { user } } = await supabase.auth.getUser();
-    const { error } = await supabase.from('announcements').insert({
+    const { data: announcement, error } = await supabase.from('announcements').insert({
       title: announcementText.title.trim(), body: announcementText.body.trim(),
       category: announcementText.category, is_important: announcementText.is_important, created_by: user.id
-    });
+    }).select('id').single();
     if (error) setError('Kunde inte publicera: ' + error.message);
     else {
       setAnnouncementText({ title: '', body: '', category: 'Information', is_important: false });
       setShowAnnouncementForm(false);
       await loadAnnouncements();
+
+      // Push is sent only for a newly published Interninfo post, never for comments.
+      const { data: pushResult, error: pushError } = await supabase.functions.invoke('send-interninfo-push', {
+        body: { announcementId: announcement.id }
+      });
+      if (pushError || pushResult?.error) {
+        setPushMessage('Inlägget publicerades, men utskicket av notiser misslyckades: ' + (pushResult?.error || pushError.message));
+      } else if (pushResult?.sent > 0) {
+        setPushMessage(`Inlägget publicerades. ${pushResult.sent} pushnotis(er) skickades.`);
+      } else {
+        setPushMessage('Inlägget publicerades. Inga aktiva pushprenumerationer kunde nås.');
+      }
     }
     setAnnouncementBusy(false);
   }
@@ -417,6 +542,9 @@ export default function App() {
   return <main className="app-shell">
     <style>{`
       .main-tabs{display:flex;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}
+      .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
+      .push-notification-button:disabled{opacity:.75;cursor:default}
+      @media(max-width:520px){.top-actions{gap:6px}.push-notification-button{padding:8px 9px;font-size:11px}}
       .main-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:11px 18px;border-radius:9px;border:1px solid #3b3b3b;background:#202020;color:#c9c9c9;font-weight:650;cursor:pointer;transition:background .15s,border-color .15s}
       .main-tabs button.active{background:#3a1719;border-color:#d92730;color:#fff}
       .announcement-list{display:grid;gap:16px;margin-top:22px}
@@ -443,8 +571,9 @@ export default function App() {
       .main-tabs button:focus-visible{outline:2px solid #e34a50;outline-offset:2px}
       @media(max-width:520px){.main-tabs button{flex:1;padding:10px 8px;font-size:14px}.announcement-card{padding:17px}}
     `}</style>
-    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setError(''); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setError(''); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className="main-tabs"><button className={!showInternInfo ? 'active' : ''} onClick={() => setShowInternInfo(false)}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={() => { setShowInternInfo(true); loadAnnouncements(); }}><Megaphone size={16} /> Interninfo</button></nav>
+    {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {showInternInfo ? <>
       <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></section>
       {showAnnouncementForm && <section className="dialog announcement-compose"><h2>Nytt inlägg</h2><form className="machine-form" onSubmit={publishAnnouncement}><label className="full">Rubrik<input value={announcementText.title} onChange={e => setAnnouncementText(v => ({ ...v, title: e.target.value }))} required maxLength={140} placeholder="Vad gäller informationen?" /></label><label className="full">Kategori<select value={announcementText.category} onChange={e => setAnnouncementText(v => ({ ...v, category: e.target.value }))}><option>Information</option><option>Nyhet</option><option>Driftinformation</option><option>Viktigt</option></select></label><label className="full">Meddelande<textarea rows={5} value={announcementText.body} onChange={e => setAnnouncementText(v => ({ ...v, body: e.target.value }))} required placeholder="Skriv informationen här…" /></label><label className="full checkbox-line"><input type="checkbox" checked={announcementText.is_important} onChange={e => setAnnouncementText(v => ({ ...v, is_important: e.target.checked }))} /> Markera som viktig information</label><button className="primary wide" disabled={announcementBusy}>{announcementBusy ? 'Publicerar…' : 'Publicera'}</button><button type="button" className="wide" onClick={() => setShowAnnouncementForm(false)}>Avbryt</button></form></section>}
