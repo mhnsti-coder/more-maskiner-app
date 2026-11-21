@@ -100,7 +100,7 @@ export default function App() {
     }
     try {
       const registration = await navigator.serviceWorker.getRegistration('/')
-        || await navigator.serviceWorker.register('/sw.js');
+        || await navigator.serviceWorker.register('/sw.js', { scope: '/' });
       const subscription = await registration.pushManager.getSubscription();
       if (!subscription) {
         setPushEnabled(false);
@@ -110,18 +110,27 @@ export default function App() {
         .from('push_subscriptions')
         .select('id')
         .eq('endpoint', subscription.endpoint)
+        .eq('user_id', session.user.id)
         .maybeSingle();
-      setPushEnabled(!error && Boolean(data));
-    } catch {
+      if (error) {
+        setPushEnabled(false);
+        setPushMessage('Kunde inte kontrollera notisinställningen: ' + error.message);
+        return;
+      }
+      setPushEnabled(Boolean(data));
+      if (!data) {
+        setPushMessage('Telefonen har en pushprenumeration, men den är inte sparad på ditt konto. Tryck på Aktivera notiser för att koppla den.');
+      }
+    } catch (err) {
       setPushEnabled(false);
+      setPushMessage('Kunde inte kontrollera notiserna: ' + (err?.message || 'Okänt fel.'));
     }
   }
 
   async function enablePushNotifications() {
-    // Permission prompts must be initiated directly by the user's button press.
     if (pushBusy || pushEnabled) return;
     setPushBusy(true);
-    setPushMessage('');
+    setPushMessage('Startar aktivering av notiser…');
     try {
       if (!session?.user?.id) throw new Error('Du måste vara inloggad för att aktivera notiser.');
       if (!VAPID_PUBLIC_KEY) throw new Error('Pushnyckeln saknas i appens miljöinställningar (VITE_VAPID_PUBLIC_KEY).');
@@ -136,6 +145,7 @@ export default function App() {
         throw new Error('På iPhone behöver MÖRE först läggas till på hemskärmen och öppnas därifrån innan notiser kan aktiveras.');
       }
 
+      setPushMessage('Kontrollerar behörighet för notiser…');
       const permission = await Notification.requestPermission();
       if (permission !== 'granted') {
         throw new Error(permission === 'denied'
@@ -143,12 +153,21 @@ export default function App() {
           : 'Du valde att inte tillåta notiser.');
       }
 
+      setPushMessage('Ansluter till telefonens notistjänst…');
       const registration = await navigator.serviceWorker.getRegistration('/')
-        || await navigator.serviceWorker.register('/sw.js');
-      await navigator.serviceWorker.ready;
-      let subscription = await registration.pushManager.getSubscription();
+        || await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      const readyRegistration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((_, reject) => window.setTimeout(
+          () => reject(new Error('Appens service worker startade inte. Stäng appen helt, öppna den igen och försök på nytt.')),
+          12000
+        ))
+      ]);
+      const activeRegistration = readyRegistration || registration;
+      let subscription = await activeRegistration.pushManager.getSubscription();
       if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
+        setPushMessage('Skapar en säker notisprenumeration…');
+        subscription = await activeRegistration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
         });
@@ -160,6 +179,7 @@ export default function App() {
         throw new Error('Telefonens pushprenumeration kunde inte läsas. Försök igen.');
       }
 
+      setPushMessage('Sparar notisinställningen på ditt konto…');
       const subscriptionRow = {
         user_id: session.user.id,
         endpoint: subscriptionJson.endpoint,
@@ -171,12 +191,12 @@ export default function App() {
         .select('id')
         .eq('endpoint', subscriptionJson.endpoint)
         .maybeSingle();
-      if (lookupError) throw new Error('Kunde inte kontrollera pushprenumerationen: ' + lookupError.message);
+      if (lookupError) throw new Error('Kunde inte kontrollera pushprenumerationen i databasen: ' + lookupError.message);
 
       const saveResult = existing
         ? await supabase.from('push_subscriptions').update(subscriptionRow).eq('id', existing.id)
         : await supabase.from('push_subscriptions').insert(subscriptionRow);
-      if (saveResult.error) throw new Error('Kunde inte spara notisinställningen: ' + saveResult.error.message);
+      if (saveResult.error) throw new Error('Kunde inte spara notisinställningen i databasen: ' + saveResult.error.message);
 
       setPushEnabled(true);
       setPushMessage('Notiser är aktiverade på den här enheten.');
