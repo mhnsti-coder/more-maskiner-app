@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download } from 'lucide-react';
+import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem' };
@@ -29,9 +29,11 @@ export default function App() {
   const [machines, setMachines] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
+  const [authActivity, setAuthActivity] = useState([]);
+  const [authActivityLoading, setAuthActivityLoading] = useState(false);
+  const [showAuthActivity, setShowAuthActivity] = useState(false);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
-  const [showMachineHistory, setShowMachineHistory] = useState(false);
   const [machinePhotos, setMachinePhotos] = useState([]);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState(null);
@@ -141,6 +143,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let lastSignedInUserId = null;
     supabase.auth.getSession().then(({ data }) => {
       if (!alive) return;
       setSession(data.session);
@@ -148,6 +151,12 @@ export default function App() {
     });
     const { data: listener } = supabase.auth.onAuthStateChange((event, value) => {
       setSession(value);
+      if (event === 'SIGNED_IN' && value?.user?.id && lastSignedInUserId !== value.user.id) {
+        lastSignedInUserId = value.user.id;
+        Promise.resolve().then(() => recordAuthActivity('login', value.user.id));
+      } else if (event === 'SIGNED_OUT') {
+        lastSignedInUserId = null;
+      }
       if (event === 'PASSWORD_RECOVERY') {
         setPasswordFlow('recovery');
         setPasswordNotice('Välj ett nytt lösenord.');
@@ -492,6 +501,20 @@ export default function App() {
     if (error) setError(error.message); else setProfiles(data || []);
   }
 
+  async function loadAuthActivity() {
+    setAuthActivityLoading(true);
+    const { data, error } = await supabase.from('auth_activity_history').select('id, user_id, event_type, created_at, profiles(full_name)').order('created_at', { ascending: false }).limit(100);
+    if (error) setError('Kunde inte hämta inloggningshistoriken: ' + error.message);
+    else setAuthActivity(data || []);
+    setAuthActivityLoading(false);
+  }
+
+  async function recordAuthActivity(eventType, userId) {
+    if (!userId) return;
+    const { error } = await supabase.from('auth_activity_history').insert({ user_id: userId, event_type: eventType });
+    if (error) console.warn('Kunde inte spara inloggningshändelsen:', error.message);
+  }
+
   async function loadAdminUsers() {
     setAdminUsersLoading(true);
     try {
@@ -548,7 +571,12 @@ export default function App() {
     setPasswordBusy(false);
   }
 
-  async function signOut() { await supabase.auth.signOut(); setMachines([]); setSelected(null); setPasswordFlow(''); }
+  async function signOut() {
+    const userId = session?.user?.id;
+    if (userId) await recordAuthActivity('logout', userId);
+    await supabase.auth.signOut();
+    setMachines([]); setSelected(null); setPasswordFlow('');
+  }
 
   async function addMachine(event) {
     event.preventDefault(); setError('');
@@ -603,7 +631,7 @@ export default function App() {
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
     setSelected(machine);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setShowMachineHistory(false); setMachinePhotos([]); setActiveReservations([]);
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
     const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
@@ -1027,6 +1055,14 @@ export default function App() {
       .admin-users-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
       .admin-refresh-button{display:inline-flex;align-items:center;gap:7px;background:#242424;color:#eee;border:1px solid #555;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
       .admin-refresh-button:disabled{opacity:.55;cursor:wait}
+      .auth-activity-section{margin-top:18px;padding-top:16px;border-top:1px solid #333}
+      .auth-activity-list{margin-top:12px}
+      .auth-activity-row{display:flex;align-items:center;gap:11px;padding:11px 0;border-bottom:1px solid #333}
+      .auth-activity-row>div{display:flex;flex-direction:column;gap:3px;min-width:0}
+      .auth-activity-row small{color:#999}
+      .auth-activity-icon{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;flex:none}
+      .auth-activity-icon.login{color:#75d69a;background:#183323}
+      .auth-activity-icon.logout{color:#aaa;background:#292929}
       .machine-photo img{width:100%;height:100%;object-fit:cover;border-radius:10px}
       .status.partial_sold{background:#493817;color:#f2c66d;border:1px solid #765b25}
       .status.mixed{background:#3b2c18;color:#ffd27a;border:1px solid #8a6428}
@@ -1179,40 +1215,6 @@ export default function App() {
       }
       @media(min-width:701px){.page-toolbar{grid-template-columns:minmax(0,1fr) auto;align-items:center}.page-summary{justify-content:flex-end}.reservation-card .secondary-action{width:auto}}
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
-       /* MÖRE designputs: samma funktioner, lite tajtare och mer konsekvent mobilvy. */
-       .home-quick-overview{margin-bottom:15px}
-       .app-shell .hero h1{font-size:clamp(27px,5vw,38px);line-height:1.12}
-       .app-shell .stats>div{padding:13px 14px;min-height:92px}
-       .app-shell .stats>div strong{line-height:1.05}
-       .inventory-controls{gap:11px;margin-top:14px}
-       .inventory-controls .quantity-control{padding:12px;gap:8px 12px}
-       .inventory-summary>p{margin:8px 0}
-       .reservation-row{gap:8px;padding:12px 0}
-       .machine-history-section{margin-top:18px}
-       .history-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px 0;border:0;border-top:1px solid #383838;border-radius:0;background:transparent;color:#f2f2f2;text-align:left;font:inherit;font-weight:700;cursor:pointer}
-       .history-toggle>span:first-child{display:inline-flex;align-items:center;gap:8px}
-       .history-toggle-action{display:inline-flex;align-items:center;gap:8px;color:#e45a60;font-size:13px;font-weight:700;white-space:nowrap}
-       .history-toggle-action>span{display:grid;place-items:center;width:22px;height:22px;border:1px solid #633438;border-radius:50%;font-size:17px;line-height:1}
-       .history-toggle:focus-visible{outline:2px solid #e34a50;outline-offset:3px}
-       .machine-history-list{padding:2px 0 4px}
-       .machine-history-list .history-item{display:grid;gap:3px;padding:10px 0;border-bottom:1px solid #303030}
-       .machine-history-list .history-item:last-child{border-bottom:0}
-       .machine-history-list .history-item strong{font-size:14px;line-height:1.35;color:#eee}
-       .machine-history-list .history-item small{font-size:12px;color:#999}
-       .announcement-list{margin-top:15px}
-       .announcement-compose{margin-bottom:16px}
-       .announcement-card .detail-section{margin-top:14px;padding-top:12px;border-top:1px solid #383838}
-       .comment-form{display:grid;gap:8px}
-       .comment-form button{justify-self:start}
-       .admin-page .admin-user-row{padding:11px 0;gap:10px}
-       @media(max-width:520px){
-         .home-quick-overview{margin-bottom:12px}
-         .app-shell .hero h1{font-size:29px}
-         .app-shell .stats>div{min-height:84px;padding:11px 12px}
-         .inventory-controls .quantity-control{padding:11px}
-         .announcement-list{margin-top:13px}
-       }
-
 
     `}</style>
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
@@ -1250,7 +1252,7 @@ export default function App() {
       <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>{isAdmin && <button type="button" onClick={() => { const next = !showDeletedAnnouncements; setShowDeletedAnnouncements(next); loadAnnouncements(next); }}>{showDeletedAnnouncements ? 'Visa aktiva inlägg' : 'Visa borttagna'}</button>}<button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></div></section>
       {showAnnouncementForm && <section className="dialog announcement-compose"><h2>Nytt inlägg</h2><form className="machine-form" onSubmit={publishAnnouncement}><label className="full">Rubrik<input value={announcementText.title} onChange={e => setAnnouncementText(v => ({ ...v, title: e.target.value }))} required maxLength={140} placeholder="Vad gäller informationen?" /></label><label className="full">Kategori<select value={announcementText.category} onChange={e => setAnnouncementText(v => ({ ...v, category: e.target.value }))}><option>Information</option><option>Nyhet</option><option>Driftinformation</option><option>Viktigt</option></select></label><label className="full">Meddelande<textarea rows={5} value={announcementText.body} onChange={e => setAnnouncementText(v => ({ ...v, body: e.target.value }))} required placeholder="Skriv informationen här…" /></label><label className="full checkbox-line"><input type="checkbox" checked={announcementText.is_important} onChange={e => setAnnouncementText(v => ({ ...v, is_important: e.target.checked }))} /> Markera som viktig information</label><div className="full announcement-file-picker"><label className="button" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: announcementBusy ? 'wait' : 'pointer' }}><Paperclip size={16} /> Lägg till bilagor<input type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" onChange={e => { const picked = Array.from(e.target.files || []); setAnnouncementFiles(current => [...current, ...picked].slice(0, 5)); e.target.value = ''; }} disabled={announcementBusy} style={{ display: 'none' }} /></label><small className="muted">Max 5 filer, 15 MB per fil. Bilder, PDF och Office-dokument.</small>{announcementFiles.length > 0 && <div className="announcement-file-list">{announcementFiles.map((file, index) => <span key={`${file.name}-${file.size}-${index}`}><FileText size={14} /> {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB) <button type="button" onClick={() => setAnnouncementFiles(current => current.filter((_, i) => i !== index))} disabled={announcementBusy} aria-label={`Ta bort ${file.name}`}><X size={14} /></button></span>)}</div>}</div><button className="primary wide" disabled={announcementBusy}>{announcementBusy ? 'Publicerar…' : 'Publicera'}</button><button type="button" className="wide" onClick={() => setShowAnnouncementForm(false)}>Avbryt</button></form></section>}
       {announcements.length === 0 ? <div className="empty"><Megaphone size={32} /><h3>{showDeletedAnnouncements ? 'Inga borttagna inlägg' : 'Ingen intern information ännu'}</h3><p>{showDeletedAnnouncements ? 'Det finns inga borttagna inlägg att återställa.' : 'Här visas nyheter och meddelanden från medarbetarna.'}</p></div> : <section className="announcement-list">{announcements.map(item => <article className="dialog announcement-card" key={item.id}><div className="announcement-meta"><span>{item.category || 'Information'}{item.deleted_at ? ' · BORTTAGET' : ''}</span><small>{dateTime(item.created_at)}</small></div><div className="announcement-author"><span>Publicerat av</span><strong>{profiles.find(profile => profile.id === item.created_by)?.full_name || 'Medarbetare'}</strong></div>{item.is_important && <p className="important-label"><AlertCircle size={15} /> Viktig information</p>}<h2>{item.title}</h2><p className="announcement-body">{item.body}</p>{isAdmin && <div className="dialog-actions" style={{marginTop:12}}>{item.deleted_at ? <button type="button" className="primary" onClick={() => setAnnouncementDeleted(item, false)} disabled={announcementDeleteBusy}><RefreshCw size={15} /> Återställ inlägg</button> : <button type="button" onClick={() => setAnnouncementDeleted(item, true)} disabled={announcementDeleteBusy} style={{color:'#f08080'}}><Trash2 size={15} /> Ta bort inlägg</button>}</div>}{(announcementAttachments[item.id] || []).length > 0 && <div className="announcement-attachments"><strong><Paperclip size={15} style={{ verticalAlign: 'middle' }} /> Bilagor</strong>{announcementAttachments[item.id].map(file => <a className="announcement-attachment" key={file.id} href={file.signedUrl || undefined} target="_blank" rel="noreferrer" onClick={e => { if (!file.signedUrl) { e.preventDefault(); setError('Bilagan kunde inte öppnas. Uppdatera Interninfo och försök igen.'); } }}><FileText size={17} /><span>{file.file_name}</span><small>{(file.file_size / 1024 / 1024).toFixed(1)} MB</small><Download size={15} /></a>)}</div>}<div className="detail-section">{(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).length > 0 && <h3><MessageSquare size={17} /> Kommentarer ({(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).length})</h3>}{(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).map(comment => <div className="comment-item" key={comment.id} style={comment.deleted_at ? {opacity:0.65,borderLeft:'3px solid #a33',paddingLeft:10} : undefined}><p>{comment.message}</p><div className="comment-footer"><small>{profiles.find(profile => profile.id === comment.user_id)?.full_name || 'Medarbetare'} · {dateTime(comment.created_at)}{comment.deleted_at ? ' · BORTTAGEN' : ''}</small>{isAdmin && <button className="comment-delete-button" type="button" onClick={() => setAnnouncementCommentDeleted(comment, !comment.deleted_at)} disabled={announcementDeleteBusy}>{comment.deleted_at ? <><RefreshCw size={14}/> Återställ</> : <><Trash2 size={14}/> Ta bort</>}</button>}</div></div>)}{!showDeletedAnnouncements && !item.deleted_at && <form className="comment-form" onSubmit={event => addAnnouncementComment(event, item.id)}><textarea rows={2} placeholder="Skriv en kommentar eller fråga…" value={announcementCommentText[item.id] || ''} onChange={e => setAnnouncementCommentText(v => ({ ...v, [item.id]: e.target.value }))} required /><button className="primary" disabled={!(announcementCommentText[item.id] || '').trim()}><Send size={16} /> Skicka</button></form>}</div></article>)}</section>}
-    </> : showAdmin && isAdmin ? <>    {showAdmin && isAdmin && <section className="admin-page page-panel"><div className="page-panel-heading"><div><p className="eyebrow">SYSTEMINSTÄLLNINGAR</p><h1><Users size={24} /> Administration</h1><p className="muted">Hantera personal, behörigheter och konton.</p></div></div><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}</div></section>}</> : <>
+    </> : showAdmin && isAdmin ? <>    {showAdmin && isAdmin && <section className="admin-page page-panel"><div className="page-panel-heading"><div><p className="eyebrow">SYSTEMINSTÄLLNINGAR</p><h1><Users size={24} /> Administration</h1><p className="muted">Hantera personal, behörigheter och konton.</p></div></div><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}<div className="detail-section auth-activity-section"><button type="button" className="admin-refresh-button" onClick={() => { const next = !showAuthActivity; setShowAuthActivity(next); if (next) loadAuthActivity(); }}><History size={15} /> {showAuthActivity ? 'Dölj inloggningshistorik' : 'Visa inloggningshistorik'}</button>{showAuthActivity && <div className="auth-activity-list">{authActivityLoading ? <p className="muted">Hämtar historik…</p> : authActivity.length === 0 ? <p className="muted">Ingen inloggningshistorik ännu.</p> : authActivity.map(item => <div className="auth-activity-row" key={item.id}><span className={item.event_type === 'login' ? 'auth-activity-icon login' : 'auth-activity-icon logout'}>{item.event_type === 'login' ? <LogIn size={16} /> : <LogOut size={16} />}</span><div><strong>{item.profiles?.full_name || 'Okänd användare'}</strong><small>{item.event_type === 'login' ? 'Loggade in' : 'Loggade ut'} · {dateTime(item.created_at)}</small></div></div>)}</div>}</div></div></section>}</> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => setShowAdd(true)}><Plus size={18} /> Lägg till maskin</button></section>
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
     <section className="stats">
@@ -1323,15 +1325,7 @@ export default function App() {
       )}
       {isSoldContext && Number(selected.sold_quantity || 0) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{Number(selected.sold_quantity || 0)} st</strong></p><button onClick={restoreSoldMachine} disabled={saving}>Ångra försäljning – återför 1 till lagret</button></section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
-      <div className="detail-section machine-history-section">
-        <button type="button" className="history-toggle" aria-expanded={showMachineHistory} onClick={() => setShowMachineHistory(value => !value)}>
-          <span><History size={18} /> Maskinhistorik</span>
-          <span className="history-toggle-action">{showMachineHistory ? 'Dölj historik' : 'Visa historik'} <span aria-hidden="true">{showMachineHistory ? '−' : '+'}</span></span>
-        </button>
-        {showMachineHistory && <div className="machine-history-list">
-          {history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}
-        </div>}
-      </div>
+      <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
