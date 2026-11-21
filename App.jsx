@@ -45,6 +45,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [showEditMachine, setShowEditMachine] = useState(false);
   const [showReservation, setShowReservation] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -509,6 +510,42 @@ export default function App() {
     const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), incoming_quantity: Math.max(0, Number.parseInt(form.incoming_quantity, 10) || 0), status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 ? 'in_stock' : (Number.parseInt(form.incoming_quantity, 10) || 0) > 0 ? 'incoming' : 'sold', created_by: user.id };
     const { error } = await supabase.from('machines').insert(payload);
     if (error) setError(error.message); else { setShowAdd(false); setForm(emptyForm); await loadMachines(); }
+  }
+
+  function openEditMachine() {
+    if (!selected) return;
+    setForm({
+      ...emptyForm,
+      machine_number: selected.machine_number || '', brand: selected.brand || '', model: selected.model || '',
+      year: selected.year == null ? '' : String(selected.year), hours: selected.hours == null ? '' : String(selected.hours),
+      price: selected.price == null ? '' : String(selected.price), description: selected.description || ''
+    });
+    setError('');
+    setShowEditMachine(true);
+  }
+
+  async function updateMachine(event) {
+    event.preventDefault();
+    if (!selected || saving) return;
+    setSaving(true); setError('');
+    const payload = {
+      machine_number: form.machine_number.trim() || null,
+      brand: form.brand.trim(), model: form.model.trim(),
+      year: form.year ? Number(form.year) : null,
+      hours: form.hours ? Number(form.hours) : null,
+      price: form.price ? Number(form.price) : null,
+      description: form.description.trim() || null
+    };
+    const { error } = await supabase.from('machines').update(payload).eq('id', selected.id);
+    if (error) setError('Kunde inte uppdatera maskinen: ' + error.message);
+    else {
+      const updated = { ...selected, ...payload };
+      setSelected(updated);
+      setShowEditMachine(false);
+      await loadMachines();
+      await loadMachineDetails(updated, selectedReservationId);
+    }
+    setSaving(false);
   }
 
   async function loadMachineDetails(machine, reservationId = null) {
@@ -1058,6 +1095,7 @@ export default function App() {
     {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'Såld' : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{Number(machine.stock_quantity ?? 1)}</strong><small>I lager</small></span><span><strong>{Number(machine.reserved_quantity || 0)}</strong><small>Reserverade</small></span><span><strong>{Number(machine.sold_quantity || 0)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
 
     {selected && <div className="overlay" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); }}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[displayMachineStatus(selected)] || displayMachineStatus(selected)}</p>
+      <div className="dialog-actions"><button type="button" className="secondary-action" onClick={openEditMachine}>Redigera maskinuppgifter</button></div>
       <div className="detail-section">
         <h3>Maskinbilder</h3>
         <p className="muted">Ta ett nytt foto eller välj bilder från telefonen. Du kan lägga till flera bilder.</p>
@@ -1108,6 +1146,11 @@ export default function App() {
       <img src={previewPhoto.publicUrl} alt="Förstorad bild på maskinen" onClick={event => event.stopPropagation()} />
       <div className="photo-lightbox-caption">{previewPhoto.is_primary ? 'Huvudbild' : 'Maskinbild'}</div>
     </div>}
+    {showEditMachine && selected && <div className="overlay" onClick={() => setShowEditMachine(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowEditMachine(false)}><X /></button><p className="eyebrow">REDIGERA MASKIN</p><h2>Ändra maskinuppgifter</h2><form className="machine-form structured-form" onSubmit={updateMachine}>
+      <div className="form-section"><h3>Grunduppgifter</h3><div className="form-fields"><label>Maskinnummer<input value={form.machine_number} onChange={e => setForm({ ...form, machine_number: e.target.value })} /></label><label>Fabrikat<input value={form.brand} onChange={e => setForm({ ...form, brand: e.target.value })} required /></label><label className="full">Modell<input value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} required /></label></div></div>
+      <div className="form-section"><h3>Maskininformation</h3><div className="form-fields"><label>Årsmodell<input type="number" value={form.year} onChange={e => setForm({ ...form, year: e.target.value })} /></label><label>Timmar<input type="number" min="0" value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} /></label><label className="full">Pris (kr)<input type="number" min="0" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} /></label></div></div>
+      <div className="form-section"><h3>Beskrivning</h3><label className="full">Information om maskinen<textarea rows={4} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label></div>
+      <p className="muted">Lagerantal och inkommande leveranser ändras separat under lagerhantering.</p><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
     {showAdd && <div className="overlay" onClick={() => setShowAdd(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdd(false)}><X /></button><p className="eyebrow">NY MASKIN</p><h2>Lägg till maskin</h2><form className="machine-form structured-form" onSubmit={addMachine}>
       <div className="form-section"><h3>Grunduppgifter</h3><p className="muted">Identifiera maskinen i registret.</p><div className="form-fields"><label>Maskinnummer<input value={form.machine_number} onChange={e => setForm({ ...form, machine_number: e.target.value })} placeholder="Ex. ER2500T-01" /></label><label>Fabrikat<input value={form.brand} onChange={e => setForm({ ...form, brand: e.target.value })} required placeholder="Tillverkare" /></label><label className="full">Modell<input value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} required placeholder="Modellbeteckning" /></label></div></div>
       <div className="form-section"><h3>Maskininformation</h3><div className="form-fields"><label>Årsmodell<input type="number" value={form.year} onChange={e => setForm({ ...form, year: e.target.value })} /></label><label>Timmar<input type="number" min="0" value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} /></label></div></div>
