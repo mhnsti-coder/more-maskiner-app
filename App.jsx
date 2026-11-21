@@ -341,15 +341,27 @@ export default function App() {
       if (attachmentFailure) setError(attachmentFailure);
 
       // Push is sent only for a newly published Interninfo post, never for comments.
-      const { data: pushResult, error: pushError } = await supabase.functions.invoke('send-interninfo-push', {
-        body: { announcementId: announcement.id }
-      });
-      if (pushError || pushResult?.error) {
-        setPushMessage('Inlägget publicerades, men utskicket av notiser misslyckades: ' + (pushResult?.error || pushError.message));
-      } else if (pushResult?.sent > 0) {
-        setPushMessage(`Inlägget publicerades. ${pushResult.sent} pushnotis(er) skickades.`);
-      } else {
-        setPushMessage('Inlägget publicerades. Inga aktiva pushprenumerationer kunde nås.');
+      // Show progress immediately and always surface failures without undoing the post.
+      setPushMessage('Inlägget publicerades. Skickar pushnotiser…');
+      console.info('[MÖRE push] Starting send-interninfo-push', { announcementId: announcement.id });
+      try {
+        const { data: pushResult, error: pushError } = await supabase.functions.invoke('send-interninfo-push', {
+          body: { announcementId: announcement.id }
+        });
+        if (pushError || pushResult?.error) {
+          const details = pushResult?.error || pushError?.message || 'Okänt fel från pushfunktionen.';
+          console.error('[MÖRE push] Function invocation failed', pushError || pushResult);
+          setPushMessage('Inlägget publicerades, men utskicket av notiser misslyckades: ' + details);
+        } else if (pushResult?.sent > 0) {
+          console.info('[MÖRE push] Delivery request completed', pushResult);
+          setPushMessage(`Inlägget publicerades. ${pushResult.sent} pushnotis(er) skickades.`);
+        } else {
+          console.warn('[MÖRE push] No subscriptions received a notification', pushResult);
+          setPushMessage(`Inlägget publicerades, men inga notiser skickades. ${pushResult?.failed || 0} misslyckades.`);
+        }
+      } catch (pushException) {
+        console.error('[MÖRE push] Unexpected exception', pushException);
+        setPushMessage('Inlägget publicerades, men pushanropet kunde inte genomföras: ' + (pushException?.message || 'Okänt nätverksfel.'));
       }
     }
     setAnnouncementBusy(false);
