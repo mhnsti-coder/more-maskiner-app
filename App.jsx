@@ -3,9 +3,9 @@ import { createClient } from '@supabase/supabase-js';
 import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
-const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld' };
-const displayMachineStatus = machine => Number(machine.stock_quantity ?? 1) <= 0 && Number(machine.sold_quantity || 0) > 0 ? 'sold' : machine.status;
-const emptyForm = { machine_number: '', brand: '', model: '', year: '', hours: '', price: '', stock_quantity: '1', description: '' };
+const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem' };
+const displayMachineStatus = machine => Number(machine.stock_quantity ?? 1) <= 0 ? (Number(machine.incoming_quantity || 0) > 0 ? 'incoming' : Number(machine.sold_quantity || 0) > 0 ? 'sold' : machine.status) : machine.status;
+const emptyForm = { machine_number: '', brand: '', model: '', year: '', hours: '', price: '', stock_quantity: '1', incoming_quantity: '0', description: '' };
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY;
 
 function urlBase64ToUint8Array(base64String) {
@@ -42,6 +42,8 @@ export default function App() {
   const [passwordNotice, setPasswordNotice] = useState('');
   const [form, setForm] = useState(emptyForm);
   const [stockEdit, setStockEdit] = useState('1');
+  const [incomingEdit, setIncomingEdit] = useState('0');
+  const [receiveQuantity, setReceiveQuantity] = useState('1');
   const [customerName, setCustomerName] = useState('');
   const [reservedBy, setReservedBy] = useState('');
   const [reservationDate, setReservationDate] = useState('');
@@ -436,7 +438,7 @@ export default function App() {
   const filtered = useMemo(() => machines.filter(m => {
     const q = search.toLowerCase();
     const matches = [m.machine_number, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
-    return matches && (filter === 'all' || (filter === 'sold' ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold' : m.status === filter));
+    return matches && (filter === 'all' || (filter === 'sold' ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : m.status === filter));
   }), [machines, search, filter]);
 
   async function signIn(event) {
@@ -476,14 +478,14 @@ export default function App() {
   async function addMachine(event) {
     event.preventDefault(); setError('');
     const { data: { user } } = await supabase.auth.getUser();
-    const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 ? 'in_stock' : 'sold', created_by: user.id };
+    const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), incoming_quantity: Math.max(0, Number.parseInt(form.incoming_quantity, 10) || 0), status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 ? 'in_stock' : (Number.parseInt(form.incoming_quantity, 10) || 0) > 0 ? 'incoming' : 'sold', created_by: user.id };
     const { error } = await supabase.from('machines').insert(payload);
     if (error) setError(error.message); else { setShowAdd(false); setForm(emptyForm); await loadMachines(); }
   }
 
   async function loadMachineDetails(machine) {
     setSelected(machine);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservation(null);
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservation(null);
     const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
@@ -631,11 +633,38 @@ export default function App() {
     if (!selected) return;
     const nextStock = Number.parseInt(stockEdit, 10);
     if (!Number.isInteger(nextStock) || nextStock < 0) { setError('Ange ett giltigt antal, 0 eller högre.'); return; }
-    const nextStatus = nextStock > 0 ? (selected.status === 'reserved' ? 'reserved' : 'in_stock') : (Number(selected.sold_quantity || 0) > 0 ? 'sold' : selected.status);
+    const nextStatus = nextStock > 0 ? (selected.status === 'reserved' ? 'reserved' : 'in_stock') : (Number(selected.incoming_quantity || 0) > 0 ? 'incoming' : Number(selected.sold_quantity || 0) > 0 ? 'sold' : selected.status);
     const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: nextStatus }).eq('id', selected.id);
     if (error) { setError('Lagersaldot kunde inte uppdateras: ' + error.message); return; }
     const updated = { ...selected, stock_quantity: nextStock, status: nextStatus };
     setSelected(updated);
+    await loadMachines();
+  }
+
+  async function saveIncomingQuantity() {
+    if (!selected) return;
+    const nextIncoming = Number.parseInt(incomingEdit, 10);
+    if (!Number.isInteger(nextIncoming) || nextIncoming < 0) { setError('Ange ett giltigt antal på väg hem, 0 eller högre.'); return; }
+    const { error } = await supabase.from('machines').update({ incoming_quantity: nextIncoming }).eq('id', selected.id);
+    if (error) { setError('Antalet på väg hem kunde inte uppdateras: ' + error.message); return; }
+    const updated = { ...selected, incoming_quantity: nextIncoming };
+    setSelected(updated);
+    await loadMachines();
+  }
+
+  async function receiveIncomingQuantity() {
+    if (!selected) return;
+    const amount = Number.parseInt(receiveQuantity, 10);
+    const incoming = Math.max(0, Number(selected.incoming_quantity || 0));
+    if (!Number.isInteger(amount) || amount < 1) { setError('Ange hur många exemplar som har kommit hem.'); return; }
+    if (amount > incoming) { setError(`Det finns bara ${incoming} st registrerade på väg hem.`); return; }
+    const nextIncoming = incoming - amount;
+    const nextStock = Math.max(0, Number(selected.stock_quantity ?? 0)) + amount;
+    const nextStatus = selected.status === 'reserved' ? 'reserved' : 'in_stock';
+    const { error } = await supabase.from('machines').update({ incoming_quantity: nextIncoming, stock_quantity: nextStock, status: nextStatus }).eq('id', selected.id);
+    if (error) { setError('Leveransen kunde inte registreras: ' + error.message); return; }
+    const updated = { ...selected, incoming_quantity: nextIncoming, stock_quantity: nextStock, status: nextStatus };
+    setSelected(updated); setStockEdit(String(nextStock)); setIncomingEdit(String(nextIncoming)); setReceiveQuantity('1');
     await loadMachines();
   }
 
@@ -816,8 +845,8 @@ export default function App() {
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
     <section className="stats">
       {[
-        { value: 'all', label: 'Totalt', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)) + Math.max(0, Number(m.sold_quantity || 0)), 0), Icon: Package },
-        { value: 'in_stock', label: 'I lager', count: machines.filter(m => m.status === 'in_stock').reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Tag },
+        { value: 'in_stock', label: 'I lager', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Tag },
+        { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
         { value: 'reserved', label: 'Reserverade', count: machines.filter(m => m.status === 'reserved').reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Clock3 },
         { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.sold_quantity || 0)), 0), Icon: CheckCircle2 }
       ].map(({ value, label, count, Icon }) => (
@@ -841,9 +870,9 @@ export default function App() {
       ))}
     </section>
     {error && <div className="error-banner">{error}</div>}
-    {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'Såld' : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="details"><span>Antal i lager: <strong>{Number(machine.stock_quantity ?? 1)} st</strong></span>{Number(machine.sold_quantity || 0) > 0 && <span>Sålda: <strong>{Number(machine.sold_quantity)} st</strong></span>}</div><strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
+    {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'Såld' : (filter === 'incoming' && Number(machine.incoming_quantity || 0) > 0 && Number(machine.stock_quantity ?? 1) <= 0 ? 'På väg hem' : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine)))}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="details"><span>Antal i lager: <strong>{Number(machine.stock_quantity ?? 1)} st</strong></span>{Number(machine.sold_quantity || 0) > 0 && <span>Sålda: <strong>{Number(machine.sold_quantity)} st</strong></span>}{Number(machine.incoming_quantity || 0) > 0 && <span>På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></span>}</div><strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
 
-    {selected && <div className="overlay" onClick={() => setSelected(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setSelected(null)}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[displayMachineStatus(selected)] || displayMachineStatus(selected)}</p><div className="detail-section"><label><strong>Antal i lager</strong><input type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /></label><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button>{Number(selected.sold_quantity || 0) > 0 && <p className="muted"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}</div>
+    {selected && <div className="overlay" onClick={() => setSelected(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setSelected(null)}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[displayMachineStatus(selected)] || displayMachineStatus(selected)}</p><div className="detail-section"><label><strong>Antal i lager</strong><input type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /></label><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button><div className="detail-section"><label><strong>Antal på väg hem</strong><input type="number" min="0" step="1" value={incomingEdit} onChange={e => setIncomingEdit(e.target.value)} /></label><button onClick={saveIncomingQuantity} disabled={Number(incomingEdit) === Number(selected.incoming_quantity || 0)}>Spara antal på väg hem</button>{Number(selected.incoming_quantity || 0) > 0 && <><p className="muted">Registrera hur många som har kommit hem. De flyttas då från På väg hem till I lager.</p><label><strong>Antal mottagna</strong><input type="number" min="1" max={Number(selected.incoming_quantity)} step="1" value={receiveQuantity} onChange={e => setReceiveQuantity(e.target.value)} /></label><button className="primary" onClick={receiveIncomingQuantity}>Ta emot leverans</button></>}</div>{Number(selected.sold_quantity || 0) > 0 && <p className="muted"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}</div>
       <div className="detail-section">
         <h3>Maskinbilder</h3>
         <p className="muted">Ta ett nytt foto eller välj bilder från telefonen. Du kan lägga till flera bilder.</p>
@@ -876,7 +905,7 @@ export default function App() {
       <img src={previewPhoto.publicUrl} alt="Förstorad bild på maskinen" onClick={event => event.stopPropagation()} />
       <div className="photo-lightbox-caption">{previewPhoto.is_primary ? 'Huvudbild' : 'Maskinbild'}</div>
     </div>}
-    {showAdd && <div className="overlay" onClick={() => setShowAdd(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdd(false)}><X /></button><p className="eyebrow">NY MASKIN</p><h2>Lägg till maskin</h2><form className="machine-form" onSubmit={addMachine}>{[['machine_number','Maskinnummer'],['brand','Fabrikat'],['model','Modell'],['year','Årsmodell'],['hours','Timmar'],['price','Pris (kr)'],['stock_quantity','Antal i lager']].map(([field,label]) => <label key={field}>{label}<input value={form[field]} type={['year','hours','price','stock_quantity'].includes(field) ? 'number' : 'text'} min={field === 'stock_quantity' ? '0' : undefined} onChange={e => setForm({ ...form, [field]: e.target.value })} /></label>)}<label className="full">Beskrivning<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><button className="primary wide">Spara maskin</button></form></section></div>}
+    {showAdd && <div className="overlay" onClick={() => setShowAdd(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdd(false)}><X /></button><p className="eyebrow">NY MASKIN</p><h2>Lägg till maskin</h2><form className="machine-form" onSubmit={addMachine}>{[['machine_number','Maskinnummer'],['brand','Fabrikat'],['model','Modell'],['year','Årsmodell'],['hours','Timmar'],['price','Pris (kr)'],['stock_quantity','Antal i lager'],['incoming_quantity','Antal på väg hem']].map(([field,label]) => <label key={field}>{label}<input value={form[field]} type={['year','hours','price','stock_quantity','incoming_quantity'].includes(field) ? 'number' : 'text'} min={['stock_quantity','incoming_quantity'].includes(field) ? '0' : undefined} onChange={e => setForm({ ...form, [field]: e.target.value })} /></label>)}<label className="full">Beskrivning<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><button className="primary wide">Spara maskin</button></form></section></div>}
     </>}
   </main>;
 }
