@@ -2,13 +2,13 @@
   "id": "/",
   "name": "MÖRE Maskiner",
   "short_name": "MÖRE",
-  "description": "Intern information och maskinöversikt för MÖRE Maskiner.",
+  "description": "MÖRE Maskiners interna maskinregister och information för personalen.",
   "lang": "sv-SE",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#151515",
+  "background_color": "#111111",
   "theme_color": "#151515",
   "icons": [
     {
