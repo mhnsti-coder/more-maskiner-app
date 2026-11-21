@@ -672,6 +672,15 @@ export default function App() {
 
   return <main className="app-shell">
     <style>{`
+      /* Stabil mobilvy i iOS/PWA: håll innehållet inom enhetens faktiska bredd. */
+      html,body,#root{width:100%;min-width:0;min-height:100%;margin:0}
+      html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+      body{overflow-x:hidden}
+      .app-shell{width:100%;max-width:1200px;margin:0 auto;box-sizing:border-box;min-width:0}
+      .app-shell,.app-shell *,.app-shell *::before,.app-shell *::after{box-sizing:border-box}
+      .app-shell .topbar,.app-shell .top-actions,.app-shell .hero,.app-shell .main-tabs,.app-shell .toolbar{min-width:0;max-width:100%}
+      .app-shell input,.app-shell textarea,.app-shell select{font-size:16px;max-width:100%}
+      .app-shell img{max-width:100%}
       .main-tabs{display:flex;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
