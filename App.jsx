@@ -48,7 +48,7 @@ export default function App() {
   const [showEditMachine, setShowEditMachine] = useState(false);
   const [showReservation, setShowReservation] = useState(false);
   const [editingReservation, setEditingReservation] = useState(null);
-  const [reservationEditForm, setReservationEditForm] = useState({ customer_name: '', quantity: '1', reserved_by: '', reservation_date: '' });
+  const [reservationEditForm, setReservationEditForm] = useState({ customer_name: '', quantity: '1', reserved_by: '', reservation_date: '', reservation_end_date: '' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordFlow, setPasswordFlow] = useState(''); // setup | recovery | forgot
@@ -63,6 +63,7 @@ export default function App() {
   const [customerName, setCustomerName] = useState('');
   const [reservedBy, setReservedBy] = useState('');
   const [reservationDate, setReservationDate] = useState('');
+  const [reservationEndDate, setReservationEndDate] = useState('');
   const [commentText, setCommentText] = useState('');
   const [saving, setSaving] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
@@ -736,7 +737,17 @@ export default function App() {
     });
     if (reservationError) setError(reservationError.message);
     else {
-      setShowReservation(false); setCustomerName(''); setReservedBy(''); setReservationDate(''); setReservationQuantity('1');
+      if (reservationEndDate) {
+        const { error: endDateError } = await supabase.from('reservations')
+          .update({ reservation_end_date: reservationEndDate, reminder_sent_at: null })
+          .eq('id', data);
+        if (endDateError) {
+          setError('Reservationen skapades, men slutdatumet kunde inte sparas: ' + endDateError.message);
+          setSaving(false);
+          return;
+        }
+      }
+      setShowReservation(false); setCustomerName(''); setReservedBy(''); setReservationDate(''); setReservationEndDate(''); setReservationQuantity('1');
       await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected);
     }
     setSaving(false);
@@ -749,7 +760,8 @@ export default function App() {
       customer_name: reservation.customer_name || '',
       quantity: String(reservation.quantity ?? 1),
       reserved_by: reservation.reserved_by || '',
-      reservation_date: reservation.reservation_date || ''
+      reservation_date: reservation.reservation_date || '',
+      reservation_end_date: reservation.reservation_end_date || ''
     });
     setError('');
   }
@@ -788,9 +800,20 @@ export default function App() {
     if (updateError) {
       setError('Reservationen kunde inte uppdateras: ' + updateError.message);
     } else {
-      setEditingReservation(null);
-      await Promise.all([loadMachines(), loadReservations()]);
-      await loadMachineDetails(selected, selectedReservationId);
+      const endDateChanged = (reservationEditForm.reservation_end_date || null) !== (editingReservation.reservation_end_date || null);
+      const { error: endDateError } = await supabase.from('reservations')
+        .update({
+          reservation_end_date: reservationEditForm.reservation_end_date || null,
+          reminder_sent_at: endDateChanged ? null : editingReservation.reminder_sent_at
+        })
+        .eq('id', editingReservation.id);
+      if (endDateError) {
+        setError('Reservationen uppdaterades, men slutdatumet kunde inte sparas: ' + endDateError.message);
+      } else {
+        setEditingReservation(null);
+        await Promise.all([loadMachines(), loadReservations()]);
+        await loadMachineDetails(selected, selectedReservationId);
+      }
     }
     setSaving(false);
   }
@@ -1124,7 +1147,7 @@ export default function App() {
       .reservation-card h2{margin:5px 0;font-size:21px}
       .reservation-quantity{display:grid;gap:2px;text-align:right;white-space:nowrap}.reservation-quantity strong{font-size:25px;color:#fff}.reservation-quantity span{font-size:12px;color:#aaa}
       .reservation-meta{display:flex;flex-wrap:wrap;align-items:center;gap:9px 17px;padding:14px 0;color:#aaa;font-size:13px}.reservation-meta>span{display:inline-flex;align-items:center;gap:6px}.reservation-seller{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:7px 11px;border:1px solid #51413b;border-left:3px solid #d64a3b;border-radius:7px;background:#211b19;min-width:145px}.reservation-seller-label{font-size:11px;line-height:1.2;font-weight:800;letter-spacing:.08em;color:#d8a69d}.reservation-seller strong{font-size:15px;line-height:1.3;color:#fff;overflow-wrap:anywhere}.detail-reservation-sellers{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:14px 0 18px}.detail-reservation-seller{display:flex;align-items:baseline;flex-wrap:wrap;gap:7px 12px;width:fit-content;margin:0;padding:0}.detail-reservation-seller .reservation-seller-label{font-size:14px;line-height:1.35;font-weight:800;letter-spacing:.045em;color:#fff}.detail-reservation-seller strong{font-size:20px;line-height:1.4;color:#fff;font-weight:800;overflow-wrap:anywhere}
-      .reservation-card .secondary-action{width:100%}
+      .reservation-deadline{display:inline-flex;align-items:center;gap:9px;padding:8px 11px;border:1px solid #8f3030;border-left:4px solid #e14a4a;border-radius:7px;background:#2a1717;color:#fff}.reservation-deadline>span{display:flex;flex-direction:column;gap:2px}.reservation-deadline strong{font-size:10px;letter-spacing:.08em;color:#ff9a9a}.reservation-deadline b{font-size:16px;line-height:1.25;color:#fff}.detail-deadline{margin:6px 0 2px;width:fit-content}.reservation-card .secondary-action{width:100%}
       .machine-quantity-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:13px 0 5px;padding:11px 0;border-top:1px solid #333;border-bottom:1px solid #333}
       .machine-quantity-summary span{display:grid;gap:2px;min-width:0}.machine-quantity-summary strong{font-size:19px;color:#f4f4f4}.machine-quantity-summary small{font-size:11px;color:#aaa}
       .incoming-note{margin:7px 0 0;color:#aaa;font-size:12px}
@@ -1187,7 +1210,7 @@ export default function App() {
       {error && <div className="error-banner">{error}</div>}
       {reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).length === 0
         ? <div className="empty"><CalendarDays size={32}/><h3>Inga aktiva reservationer</h3><p>Nya reservationer visas här när de registreras.</p></div>
-        : <section className="reservation-list">{reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).map(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const remaining=Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)); return <article className="reservation-card" key={r.id}><div className="reservation-card-main"><div><p className="eyebrow">KUNDRESERVATION</p><h2>{r.customer_name}</h2><p className="muted">{machine ? `${machine.brand} ${machine.model}` : 'Maskin saknas'}{machine?.machine_number ? ` · ${machine.machine_number}` : ''}</p></div><div className="reservation-quantity"><strong>{remaining} st</strong><span>kvar att leverera</span></div></div><div className="reservation-meta"><span><CalendarDays size={15}/> {date(r.reservation_date)}</span><div className="reservation-seller"><span className="reservation-seller-label">ANSVARIG SÄLJARE</span><strong>{seller?.full_name || 'Ansvarig saknas'}</strong></div><span>Ursprungligt antal: {r.quantity || 1} st</span>{Number(r.fulfilled_quantity||0)>0 && <span>Redan sålda: {r.fulfilled_quantity} st</span>}</div>{machine && <button className="secondary-action" onClick={() => { setShowReservations(false); loadMachineDetails(machine, r.id); }}><Package size={15}/> Öppna maskin och hantera reservation</button>}</article>; })}</section>}
+        : <section className="reservation-list">{reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).map(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const remaining=Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)); return <article className="reservation-card" key={r.id}><div className="reservation-card-main"><div><p className="eyebrow">KUNDRESERVATION</p><h2>{r.customer_name}</h2><p className="muted">{machine ? `${machine.brand} ${machine.model}` : 'Maskin saknas'}{machine?.machine_number ? ` · ${machine.machine_number}` : ''}</p></div><div className="reservation-quantity"><strong>{remaining} st</strong><span>kvar att leverera</span></div></div><div className="reservation-meta"><span><CalendarDays size={15}/> {date(r.reservation_date)}</span>{r.reservation_end_date && <span className="reservation-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></span>}<div className="reservation-seller"><span className="reservation-seller-label">ANSVARIG SÄLJARE</span><strong>{seller?.full_name || 'Ansvarig saknas'}</strong></div><span>Ursprungligt antal: {r.quantity || 1} st</span>{Number(r.fulfilled_quantity||0)>0 && <span>Redan sålda: {r.fulfilled_quantity} st</span>}</div>{machine && <button className="secondary-action" onClick={() => { setShowReservations(false); loadMachineDetails(machine, r.id); }}><Package size={15}/> Öppna maskin och hantera reservation</button>}</article>; })}</section>}
     </> : showInternInfo ? <>
       <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>{isAdmin && <button type="button" onClick={() => { const next = !showDeletedAnnouncements; setShowDeletedAnnouncements(next); loadAnnouncements(next); }}>{showDeletedAnnouncements ? 'Visa aktiva inlägg' : 'Visa borttagna'}</button>}<button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></div></section>
       {showAnnouncementForm && <section className="dialog announcement-compose"><h2>Nytt inlägg</h2><form className="machine-form" onSubmit={publishAnnouncement}><label className="full">Rubrik<input value={announcementText.title} onChange={e => setAnnouncementText(v => ({ ...v, title: e.target.value }))} required maxLength={140} placeholder="Vad gäller informationen?" /></label><label className="full">Kategori<select value={announcementText.category} onChange={e => setAnnouncementText(v => ({ ...v, category: e.target.value }))}><option>Information</option><option>Nyhet</option><option>Driftinformation</option><option>Viktigt</option></select></label><label className="full">Meddelande<textarea rows={5} value={announcementText.body} onChange={e => setAnnouncementText(v => ({ ...v, body: e.target.value }))} required placeholder="Skriv informationen här…" /></label><label className="full checkbox-line"><input type="checkbox" checked={announcementText.is_important} onChange={e => setAnnouncementText(v => ({ ...v, is_important: e.target.checked }))} /> Markera som viktig information</label><div className="full announcement-file-picker"><label className="button" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: announcementBusy ? 'wait' : 'pointer' }}><Paperclip size={16} /> Lägg till bilagor<input type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" onChange={e => { const picked = Array.from(e.target.files || []); setAnnouncementFiles(current => [...current, ...picked].slice(0, 5)); e.target.value = ''; }} disabled={announcementBusy} style={{ display: 'none' }} /></label><small className="muted">Max 5 filer, 15 MB per fil. Bilder, PDF och Office-dokument.</small>{announcementFiles.length > 0 && <div className="announcement-file-list">{announcementFiles.map((file, index) => <span key={`${file.name}-${file.size}-${index}`}><FileText size={14} /> {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB) <button type="button" onClick={() => setAnnouncementFiles(current => current.filter((_, i) => i !== index))} disabled={announcementBusy} aria-label={`Ta bort ${file.name}`}><X size={14} /></button></span>)}</div>}</div><button className="primary wide" disabled={announcementBusy}>{announcementBusy ? 'Publicerar…' : 'Publicera'}</button><button type="button" className="wide" onClick={() => setShowAnnouncementForm(false)}>Avbryt</button></form></section>}
@@ -1245,7 +1268,7 @@ export default function App() {
       {detailReservations.length > 0 && <div className="detail-reservation-sellers">{detailReservations.map(r => <div className="detail-reservation-seller" key={`seller-${r.id}`}><span className="reservation-seller-label">ANSVARIG SÄLJARE{detailReservations.length > 1 ? ` · ${r.customer_name || 'Kund'}` : ''}</span><strong>{profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</strong></div>)}</div>}
       {!isSoldContext && <>
       <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{isReservationContext && <p className="muted">Du hanterar kundreservationer. Här kan du sälja från eller avboka reservationerna.</p>}<p>I lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverade: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
-      {detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)}</small>{isReservationContext && <><button onClick={() => openEditReservation(r)} disabled={saving}>Redigera reservation</button><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)} disabled={saving}><Ban size={16} /> Avboka återstående antal</button></>}</div>; })}</>}
+      {detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)}</small>{r.reservation_end_date && <div className="reservation-deadline detail-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></div>}{isReservationContext && <><button onClick={() => openEditReservation(r)} disabled={saving}>Redigera reservation</button><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)} disabled={saving}><Ban size={16} /> Avboka återstående antal</button></>}</div>; })}</>}
       {isReservationContext && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
       </div>
       </>}
@@ -1255,7 +1278,7 @@ export default function App() {
         {Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)) > 0 && <>
           <label className="full">Antal att sälja från lagret<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label>
           <button className="primary" onClick={() => markSold(null)} disabled={saving}>Sälj från lagret</button>
-          <button onClick={() => { setReservationQuantity('1'); setShowReservation(true); }} disabled={saving}><CalendarDays size={16} /> Reservera från lagret</button>
+          <button onClick={() => { setReservationQuantity('1'); setReservationEndDate(''); setShowReservation(true); }} disabled={saving}><CalendarDays size={16} /> Reservera från lagret</button>
         </>}
       </div>}
       {!isSoldContext && (
@@ -1275,11 +1298,12 @@ export default function App() {
       {Number(editingReservation.fulfilled_quantity || 0) > 0 && <p className="muted">Redan levererade: {Number(editingReservation.fulfilled_quantity)} st. Det antalet kan inte ändras här.</p>}
       <label className="full">Ansvarig säljare<select value={reservationEditForm.reserved_by} onChange={e => setReservationEditForm({ ...reservationEditForm, reserved_by: e.target.value })} required><option value="">Välj säljare</option>{profiles.filter(p => ['admin', 'seller'].includes(p.role)).map(p => <option key={p.id} value={p.id}>{p.full_name || 'Användare'}</option>)}</select></label>
       <label className="full">Reservationsdatum<input type="date" value={reservationEditForm.reservation_date} onChange={e => setReservationEditForm({ ...reservationEditForm, reservation_date: e.target.value })} required /></label>
+      <label className="full">Reserverad till och med (valfritt)<input type="date" min={new Date().toLocaleDateString('sv-SE')} value={reservationEditForm.reservation_end_date} onChange={e => setReservationEditForm({ ...reservationEditForm, reservation_end_date: e.target.value })} /><small className="muted">Ansvarig säljare får en pushpåminnelse två dagar före slutdatumet.</small></label>
       <p className="muted">Om du ökar antalet kontrollerar systemet att tillräckligt många maskiner är lediga. Ändringen sparas i maskinhistoriken.</p>
       <button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
 
-    {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
+    {showReservation && selected && <div className="overlay" onClick={() => { setShowReservation(false); setReservationEndDate(''); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><label className="full">Reserverad till och med (valfritt)<input type="date" min={new Date().toLocaleDateString('sv-SE')} value={reservationEndDate} onChange={e => setReservationEndDate(e.target.value)} /><small className="muted">Ansvarig säljare får en pushpåminnelse två dagar före slutdatumet.</small></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
 
 
