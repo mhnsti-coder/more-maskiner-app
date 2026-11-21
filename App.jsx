@@ -796,9 +796,9 @@ export default function App() {
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
     <section className="stats">
       {[
-        { value: 'all', label: 'Totalt', count: machines.length, Icon: Package },
-        { value: 'in_stock', label: 'I lager', count: machines.filter(m => m.status === 'in_stock').length, Icon: Tag },
-        { value: 'reserved', label: 'Reserverade', count: machines.filter(m => m.status === 'reserved').length, Icon: Clock3 },
+        { value: 'all', label: 'Totalt', count: machines.filter(m => m.status !== 'sold').reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Package },
+        { value: 'in_stock', label: 'I lager', count: machines.filter(m => m.status === 'in_stock').reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Tag },
+        { value: 'reserved', label: 'Reserverade', count: machines.filter(m => m.status === 'reserved').reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Clock3 },
         { value: 'sold', label: 'Sålda', count: machines.filter(m => m.status === 'sold').length, Icon: CheckCircle2 }
       ].map(({ value, label, count, Icon }) => (
         <div
