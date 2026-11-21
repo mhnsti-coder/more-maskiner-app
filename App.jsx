@@ -882,6 +882,52 @@ export default function App() {
       .inventory-controls .receive-panel label{display:grid;grid-template-columns:minmax(0,1fr) 112px;gap:10px;align-items:center}
       .inventory-controls .receive-panel label strong{font-size:14px}
       .inventory-controls .sold-total{margin:0;padding:2px 2px 0}
+      .stock-actions{
+        display:grid;
+        grid-template-columns:minmax(0,1fr);
+        gap:12px;
+        margin:18px 0 22px;
+        padding:16px;
+        background:#151515;
+        border:1px solid #383838;
+        border-radius:12px;
+        min-width:0;
+      }
+      .stock-actions h4{margin:0;font-size:17px;line-height:1.35}
+      .stock-actions>p{margin:0;line-height:1.45}
+      .stock-actions>label.full{
+        display:grid;
+        grid-template-columns:minmax(0,1fr);
+        gap:8px;
+        margin:2px 0 0;
+        min-width:0;
+      }
+      .stock-actions input{
+        display:block;
+        width:100%;
+        min-width:0;
+        height:48px;
+        box-sizing:border-box;
+        padding:9px 12px;
+        border:1px solid #555;
+        border-radius:9px;
+        background:#fff;
+        color:#171717;
+        font:inherit;
+        font-size:18px;
+      }
+      .stock-actions>button{
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        gap:8px;
+        width:100%;
+        min-height:48px;
+        margin:0;
+        padding:11px 14px;
+        border-radius:9px;
+        white-space:normal;
+      }
       .inventory-summary{min-width:0}
       .inventory-summary>p{line-height:1.45}
       .inventory-summary>label.full{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;margin:16px 0 8px}
