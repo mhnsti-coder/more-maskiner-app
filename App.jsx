@@ -18,6 +18,7 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [machines, setMachines] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [adminUsers, setAdminUsers] = useState([]);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
   const [machinePhotos, setMachinePhotos] = useState([]);
@@ -49,6 +50,7 @@ export default function App() {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState('seller');
   const [adminBusy, setAdminBusy] = useState(false);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [recoveryLink, setRecoveryLink] = useState('');
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -308,6 +310,22 @@ export default function App() {
     if (error) setError(error.message); else setProfiles(data || []);
   }
 
+  async function loadAdminUsers() {
+    setAdminUsersLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('admin-users', { body: { action: 'list_users' } });
+      if (error || data?.error) {
+        setError(data?.error || error?.message || 'Kunde inte hämta personalen.');
+        return;
+      }
+      setAdminUsers(Array.isArray(data?.users) ? data.users : []);
+    } catch (loadError) {
+      setError(loadError?.message || 'Kunde inte hämta personalen.');
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  }
+
   useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); } }, [session]);
 
   const filtered = useMemo(() => machines.filter(m => {
@@ -530,7 +548,7 @@ export default function App() {
     } else {
       const invitedEmail = newUserEmail.trim();
       setNewUserName(''); setNewUserEmail(''); setNewUserRole('seller');
-      await loadProfiles();
+      await Promise.all([loadProfiles(), loadAdminUsers()]);
       alert('Inbjudan skickad till ' + invitedEmail + '.');
     }
     setAdminBusy(false);
@@ -540,7 +558,7 @@ export default function App() {
     event.preventDefault();
     setAdminBusy(true); setError(''); setRecoveryLink('');
     const { data, error } = await supabase.functions.invoke('admin-users', {
-      body: { action: 'recovery_link', email: recoveryEmail.trim() }
+      body: { action: 'recovery_link', email: recoveryEmail.trim(), redirect_to: window.location.origin }
     });
     if (error || data?.error) {
       setError(data?.error || error.message || 'Kunde inte skapa återställningslänk.');
@@ -548,6 +566,24 @@ export default function App() {
       setRecoveryLink(data.action_link);
     } else {
       setError('Supabase returnerade ingen återställningslänk.');
+    }
+    setAdminBusy(false);
+  }
+
+  async function updateAdminUser(action, user, role) {
+    if (!user?.id || adminBusy) return;
+    const label = action === 'deactivate' ? 'avaktivera' : action === 'reactivate' ? 'återaktivera' : 'ändra behörighet för';
+    const detail = action === 'change_role' ? ` till ${role === 'admin' ? 'Administratör' : 'Säljare'}` : '';
+    if (!window.confirm(`Vill du ${label} ${user.full_name || user.email}${detail}?`)) return;
+    setAdminBusy(true); setError('');
+    const body = action === 'change_role'
+      ? { action, user_id: user.id, role }
+      : { action, user_id: user.id };
+    const { data, error } = await supabase.functions.invoke('admin-users', { body });
+    if (error || data?.error) {
+      setError(data?.error || error.message || 'Åtgärden kunde inte genomföras.');
+    } else {
+      await Promise.all([loadAdminUsers(), loadProfiles()]);
     }
     setAdminBusy(false);
   }
@@ -568,6 +604,16 @@ export default function App() {
       .main-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:11px 18px;border-radius:9px;border:1px solid #3b3b3b;background:#202020;color:#c9c9c9;font-weight:650;cursor:pointer;transition:background .15s,border-color .15s}
       .main-tabs button.active{background:#3a1719;border-color:#d92730;color:#fff}
       .announcement-list{display:grid;gap:16px;margin-top:22px}
+      .admin-user-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:13px 0;border-bottom:1px solid #333}
+      .admin-user-main{display:flex;flex-direction:column;gap:4px;min-width:150px}
+      .admin-user-main small{color:#999;overflow-wrap:anywhere}
+      .admin-user-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .admin-user-controls select,.admin-status-button{background:#242424;color:#eee;border:1px solid #555;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
+      .admin-status-button{border-color:#8b3434;color:#ff9a9a}
+      .admin-user-controls button:disabled,.admin-user-controls select:disabled{opacity:.55}
+      .admin-users-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+      .admin-refresh-button{display:inline-flex;align-items:center;gap:7px;background:#242424;color:#eee;border:1px solid #555;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
+      .admin-refresh-button:disabled{opacity:.55;cursor:wait}
       .machine-photo img{width:100%;height:100%;object-fit:cover;border-radius:10px}
       .machine-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:12px;margin-top:14px}
       .machine-photo-item{min-width:0;display:flex;flex-direction:column;gap:7px}
@@ -591,7 +637,7 @@ export default function App() {
       .main-tabs button:focus-visible{outline:2px solid #e34a50;outline-offset:2px}
       @media(max-width:520px){.main-tabs button{flex:1;padding:10px 8px;font-size:14px}.announcement-card{padding:17px}}
     `}</style>
-    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setError(''); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setError(''); loadAdminUsers(); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className="main-tabs"><button className={!showInternInfo ? 'active' : ''} onClick={() => setShowInternInfo(false)}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={() => { setShowInternInfo(true); loadAnnouncements(); }}><Megaphone size={16} /> Interninfo</button></nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {showInternInfo ? <>
@@ -631,7 +677,7 @@ export default function App() {
 
     {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
-    {showAdmin && isAdmin && <div className="overlay" onClick={() => setShowAdmin(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdmin(false)}><X /></button><p className="eyebrow">ADMINISTRATION</p><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><h3><ShieldCheck size={18} /> Personal i systemet</h3>{profiles.map(profile => <div className="history-item" key={profile.id}><strong>{profile.full_name || 'Namn saknas'}</strong><small>{profile.role === 'admin' ? 'Administratör' : 'Säljare'}</small></div>)}</div></section></div>}
+    {showAdmin && isAdmin && <div className="overlay" onClick={() => setShowAdmin(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdmin(false)}><X /></button><p className="eyebrow">ADMINISTRATION</p><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}</div></section></div>}
 
     {previewPhoto && <div className="photo-lightbox" role="dialog" aria-modal="true" onClick={() => setPreviewPhoto(null)}>
       <button type="button" className="photo-lightbox-close" onClick={() => setPreviewPhoto(null)} aria-label="Stäng bildvisning"><X size={26} /></button>
