@@ -935,7 +935,7 @@ export default function App() {
         .app-shell .stats{grid-template-columns:repeat(2,minmax(0,1fr));}
         .app-shell .machine-grid{grid-template-columns:minmax(0,1fr);}
       }
-      .home-quick-overview{margin:12px 0 24px;padding:0;border-bottom:1px solid #303030}
+      .home-quick-overview{margin:14px 0 22px;padding:0;border-bottom:1px solid #303030}
       .home-quick-heading{margin:0 0 5px;color:#aaa;font-size:10px;font-weight:800;letter-spacing:.14em}
       .home-quick-row{display:flex;align-items:center;gap:11px;width:100%;min-width:0;padding:11px 2px;background:transparent;border:0;border-top:1px solid #292929;border-radius:0;color:#f3f3f3;text-align:left;cursor:pointer}
       .home-quick-row:last-child{border-bottom:0}
@@ -1120,6 +1120,27 @@ export default function App() {
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className="main-tabs"><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); }}><Package size={16} /> Maskiner</button><button className={showReservations ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}><CalendarDays size={16} /> Reservationer</button><button className={showInternInfo ? 'active' : ''} onClick={() => { setShowInternInfo(true); setShowReservations(false); setShowAdmin(false); loadAnnouncements(); }}><Megaphone size={16} /> Interninfo</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
+    {!showReservations && !showInternInfo && !showAdmin && <>
+    <section className="home-quick-overview" aria-label="Min översikt">
+      <p className="home-quick-heading">MIN ÖVERSIKT</p>
+      <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}>
+        <span className="home-quick-icon"><CalendarDays size={18} /></span>
+        <span className="home-quick-copy">
+          <strong>Mina reservationer</strong>
+          <small>{reservations.filter(r => r.reserved_by === session?.user?.id).length} aktiva reservationer</small>
+        </span>
+        <span className="home-quick-action">Visa <span aria-hidden="true">›</span></span>
+      </button>
+      {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(true); setShowReservations(false); setShowAdmin(false); loadAnnouncements(); }}>
+        <span className="home-quick-icon"><Megaphone size={18} /></span>
+        <span className="home-quick-copy">
+          <strong>Senaste Interninfo</strong>
+          <small>{announcements[0].title || 'Nytt inlägg publicerat'}</small>
+        </span>
+        <span className="home-quick-action">Läs <span aria-hidden="true">›</span></span>
+      </button>}
+    </section>
+    </>}
     {showReservations ? <>
       <section className="hero page-hero"><div><p className="eyebrow">FÖRSÄLJNING & BOKNING</p><h1>Reservationer</h1><p className="muted">Överblick över kundernas bokade maskiner och återstående antal.</p></div><button className="secondary-action" onClick={loadReservations}><RefreshCw size={16}/> Uppdatera</button></section>
       <section className="page-toolbar"><div className="search"><Search size={18}/><input value={reservationSearch} onChange={e => setReservationSearch(e.target.value)} placeholder="Sök kund, maskin eller ansvarig…"/></div><div className="page-summary"><strong>{reservations.reduce((sum,r)=>sum+Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)),0)} st</strong><span>reserverade totalt</span><strong>{reservations.length}</strong><span>aktiva reservationer</span></div></section>
@@ -1160,25 +1181,7 @@ export default function App() {
         </div>
       ))}
     </section>
-    <section className="home-quick-overview" aria-label="Min översikt">
-      <p className="home-quick-heading">MIN ÖVERSIKT</p>
-      <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}>
-        <span className="home-quick-icon"><CalendarDays size={18} /></span>
-        <span className="home-quick-copy">
-          <strong>Mina reservationer</strong>
-          <small>{reservations.filter(r => r.reserved_by === session?.user?.id).length} aktiva reservationer</small>
-        </span>
-        <span className="home-quick-action">Visa <span aria-hidden="true">›</span></span>
-      </button>
-      {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(true); setShowReservations(false); setShowAdmin(false); loadAnnouncements(); }}>
-        <span className="home-quick-icon"><Megaphone size={18} /></span>
-        <span className="home-quick-copy">
-          <strong>Senaste Interninfo</strong>
-          <small>{announcements[0].title || 'Nytt inlägg publicerat'}</small>
-        </span>
-        <span className="home-quick-action">Läs <span aria-hidden="true">›</span></span>
-      </button>}
-    </section>
+
     {error && <div className="error-banner">{error}</div>}
     {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'Såld' : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{Number(machine.stock_quantity ?? 1)}</strong><small>I lager</small></span><span><strong>{Number(machine.reserved_quantity || 0)}</strong><small>Reserverade</small></span><span><strong>{Number(machine.sold_quantity || 0)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
 
