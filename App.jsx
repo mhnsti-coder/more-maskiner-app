@@ -31,6 +31,7 @@ export default function App() {
   const [adminUsers, setAdminUsers] = useState([]);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
+  const [showMachineHistory, setShowMachineHistory] = useState(false);
   const [machinePhotos, setMachinePhotos] = useState([]);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState(null);
@@ -602,7 +603,7 @@ export default function App() {
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
     setSelected(machine);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setShowMachineHistory(false); setMachinePhotos([]); setActiveReservations([]);
     const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
@@ -1178,6 +1179,40 @@ export default function App() {
       }
       @media(min-width:701px){.page-toolbar{grid-template-columns:minmax(0,1fr) auto;align-items:center}.page-summary{justify-content:flex-end}.reservation-card .secondary-action{width:auto}}
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
+       /* MÖRE designputs: samma funktioner, lite tajtare och mer konsekvent mobilvy. */
+       .home-quick-overview{margin-bottom:15px}
+       .app-shell .hero h1{font-size:clamp(27px,5vw,38px);line-height:1.12}
+       .app-shell .stats>div{padding:13px 14px;min-height:92px}
+       .app-shell .stats>div strong{line-height:1.05}
+       .inventory-controls{gap:11px;margin-top:14px}
+       .inventory-controls .quantity-control{padding:12px;gap:8px 12px}
+       .inventory-summary>p{margin:8px 0}
+       .reservation-row{gap:8px;padding:12px 0}
+       .machine-history-section{margin-top:18px}
+       .history-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:12px 0;border:0;border-top:1px solid #383838;border-radius:0;background:transparent;color:#f2f2f2;text-align:left;font:inherit;font-weight:700;cursor:pointer}
+       .history-toggle>span:first-child{display:inline-flex;align-items:center;gap:8px}
+       .history-toggle-action{display:inline-flex;align-items:center;gap:8px;color:#e45a60;font-size:13px;font-weight:700;white-space:nowrap}
+       .history-toggle-action>span{display:grid;place-items:center;width:22px;height:22px;border:1px solid #633438;border-radius:50%;font-size:17px;line-height:1}
+       .history-toggle:focus-visible{outline:2px solid #e34a50;outline-offset:3px}
+       .machine-history-list{padding:2px 0 4px}
+       .machine-history-list .history-item{display:grid;gap:3px;padding:10px 0;border-bottom:1px solid #303030}
+       .machine-history-list .history-item:last-child{border-bottom:0}
+       .machine-history-list .history-item strong{font-size:14px;line-height:1.35;color:#eee}
+       .machine-history-list .history-item small{font-size:12px;color:#999}
+       .announcement-list{margin-top:15px}
+       .announcement-compose{margin-bottom:16px}
+       .announcement-card .detail-section{margin-top:14px;padding-top:12px;border-top:1px solid #383838}
+       .comment-form{display:grid;gap:8px}
+       .comment-form button{justify-self:start}
+       .admin-page .admin-user-row{padding:11px 0;gap:10px}
+       @media(max-width:520px){
+         .home-quick-overview{margin-bottom:12px}
+         .app-shell .hero h1{font-size:29px}
+         .app-shell .stats>div{min-height:84px;padding:11px 12px}
+         .inventory-controls .quantity-control{padding:11px}
+         .announcement-list{margin-top:13px}
+       }
+
 
     `}</style>
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
@@ -1288,7 +1323,15 @@ export default function App() {
       )}
       {isSoldContext && Number(selected.sold_quantity || 0) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{Number(selected.sold_quantity || 0)} st</strong></p><button onClick={restoreSoldMachine} disabled={saving}>Ångra försäljning – återför 1 till lagret</button></section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
-      <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
+      <div className="detail-section machine-history-section">
+        <button type="button" className="history-toggle" aria-expanded={showMachineHistory} onClick={() => setShowMachineHistory(value => !value)}>
+          <span><History size={18} /> Maskinhistorik</span>
+          <span className="history-toggle-action">{showMachineHistory ? 'Dölj historik' : 'Visa historik'} <span aria-hidden="true">{showMachineHistory ? '−' : '+'}</span></span>
+        </button>
+        {showMachineHistory && <div className="machine-history-list">
+          {history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}
+        </div>}
+      </div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
