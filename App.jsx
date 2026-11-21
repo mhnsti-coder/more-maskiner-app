@@ -47,6 +47,8 @@ export default function App() {
   const [showAdd, setShowAdd] = useState(false);
   const [showEditMachine, setShowEditMachine] = useState(false);
   const [showReservation, setShowReservation] = useState(false);
+  const [editingReservation, setEditingReservation] = useState(null);
+  const [reservationEditForm, setReservationEditForm] = useState({ customer_name: '', quantity: '1', reserved_by: '', reservation_date: '' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordFlow, setPasswordFlow] = useState(''); // setup | recovery | forgot
@@ -698,6 +700,59 @@ export default function App() {
     setSaving(false);
   }
 
+  function openEditReservation(reservation) {
+    if (!reservation || reservation.status !== 'active') return;
+    setEditingReservation(reservation);
+    setReservationEditForm({
+      customer_name: reservation.customer_name || '',
+      quantity: String(reservation.quantity ?? 1),
+      reserved_by: reservation.reserved_by || '',
+      reservation_date: reservation.reservation_date || ''
+    });
+    setError('');
+  }
+
+  async function saveReservationEdit(event) {
+    event.preventDefault();
+    if (!selected || !editingReservation || saving) return;
+    const quantity = Number.parseInt(reservationEditForm.quantity, 10);
+    const fulfilled = Number(editingReservation.fulfilled_quantity || 0);
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      setError('Ange ett giltigt totalt antal.');
+      return;
+    }
+    if (quantity < fulfilled) {
+      setError(`Antalet kan inte vara lägre än redan levererade ${fulfilled} st.`);
+      return;
+    }
+    if (!reservationEditForm.customer_name.trim()) {
+      setError('Kundnamn måste anges.');
+      return;
+    }
+    if (!reservationEditForm.reserved_by) {
+      setError('Välj ansvarig säljare.');
+      return;
+    }
+
+    setSaving(true);
+    setError('');
+    const { error: updateError } = await supabase.rpc('update_machine_reservation', {
+      p_reservation_id: editingReservation.id,
+      p_customer_name: reservationEditForm.customer_name.trim(),
+      p_reservation_date: reservationEditForm.reservation_date || null,
+      p_quantity: quantity,
+      p_reserved_by: reservationEditForm.reserved_by
+    });
+    if (updateError) {
+      setError('Reservationen kunde inte uppdateras: ' + updateError.message);
+    } else {
+      setEditingReservation(null);
+      await Promise.all([loadMachines(), loadReservations()]);
+      await loadMachineDetails(selected, selectedReservationId);
+    }
+    setSaving(false);
+  }
+
   async function cancelReservation(reservationId) {
     if (!selected || !reservationId) return;
     const reservation = activeReservations.find(item => item.id === reservationId);
@@ -1113,7 +1168,7 @@ export default function App() {
       </div>
       {!isSoldContext && <>
       <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{isReservationContext && <p className="muted">Du hanterar kundreservationer. Här kan du sälja från eller avboka reservationerna.</p>}<p>I lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverade: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
-      {detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)} · {profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</small>{isReservationContext && <><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)}><Ban size={16} /> Avboka återstående antal</button></>}</div>; })}</>}
+      {detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)} · {profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</small>{isReservationContext && <><button onClick={() => openEditReservation(r)} disabled={saving}>Redigera reservation</button><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)} disabled={saving}><Ban size={16} /> Avboka återstående antal</button></>}</div>; })}</>}
       {isReservationContext && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
       </div>
       </>}
@@ -1136,6 +1191,16 @@ export default function App() {
       <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
+
+    {editingReservation && selected && <div className="overlay" onClick={() => !saving && setEditingReservation(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setEditingReservation(null)} disabled={saving}><X /></button><p className="eyebrow">REDIGERA RESERVATION</p><h2>Ändra kundreservation</h2><p className="muted">{selected.brand} {selected.model} · {selected.machine_number || 'Utan maskinnummer'}</p><form className="machine-form" onSubmit={saveReservationEdit}>
+      <label className="full">Kundens namn<input value={reservationEditForm.customer_name} onChange={e => setReservationEditForm({ ...reservationEditForm, customer_name: e.target.value })} required /></label>
+      <label className="full">Totalt reserverat antal<input type="number" min={Math.max(1, Number(editingReservation.fulfilled_quantity || 0))} step="1" value={reservationEditForm.quantity} onChange={e => setReservationEditForm({ ...reservationEditForm, quantity: e.target.value })} required /></label>
+      {Number(editingReservation.fulfilled_quantity || 0) > 0 && <p className="muted">Redan levererade: {Number(editingReservation.fulfilled_quantity)} st. Det antalet kan inte ändras här.</p>}
+      <label className="full">Ansvarig säljare<select value={reservationEditForm.reserved_by} onChange={e => setReservationEditForm({ ...reservationEditForm, reserved_by: e.target.value })} required><option value="">Välj säljare</option>{profiles.filter(p => ['admin', 'seller'].includes(p.role)).map(p => <option key={p.id} value={p.id}>{p.full_name || 'Användare'}</option>)}</select></label>
+      <label className="full">Reservationsdatum<input type="date" value={reservationEditForm.reservation_date} onChange={e => setReservationEditForm({ ...reservationEditForm, reservation_date: e.target.value })} required /></label>
+      <p className="muted">Om du ökar antalet kontrollerar systemet att tillräckligt många maskiner är lediga. Ändringen sparas i maskinhistoriken.</p>
+      <button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}
+    </form></section></div>}
 
     {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
