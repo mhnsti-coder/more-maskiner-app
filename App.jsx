@@ -637,7 +637,9 @@ export default function App() {
   }
 
   async function createReservation(event) {
-    event.preventDefault(); if (!selected) return;
+    event.preventDefault();
+    if (!selected) return;
+    if (selectedReservationId !== null) { setError('Du kan inte skapa en ny reservation när du hanterar en befintlig kundreservation.'); return; }
     const amount = Number.parseInt(reservationQuantity, 10);
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att reservera.'); return; }
     setSaving(true); setError('');
@@ -706,6 +708,14 @@ export default function App() {
 
   async function markSold(reservationId = null) {
     if (!selected) return;
+    if (selectedReservationId !== null && reservationId !== selectedReservationId) {
+      setError('I en kundreservation kan försäljning bara göras från den valda reservationen.');
+      return;
+    }
+    if (selectedReservationId === null && reservationId !== null) {
+      setError('Öppna kundreservationen på nytt innan du säljer från den.');
+      return;
+    }
     const amount = Number.parseInt(saleQuantity, 10);
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att sälja.'); return; }
     setError(''); setSaving(true);
@@ -787,7 +797,8 @@ export default function App() {
     setAdminBusy(false);
   }
 
-  const detailReservations = selectedReservationId ? activeReservations.filter(r => r.id === selectedReservationId) : activeReservations;
+  const isReservationContext = selectedReservationId !== null;
+  const detailReservations = isReservationContext ? activeReservations.filter(r => r.id === selectedReservationId) : activeReservations;
   const date = value => value ? new Date(value).toLocaleDateString('sv-SE') : '–';
   const dateTime = value => value ? new Date(value).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '';
 
@@ -1000,11 +1011,11 @@ export default function App() {
         </div>
         {machinePhotos.length === 0 ? <p className="muted">Inga bilder uppladdade ännu.</p> : <div className="machine-photo-gallery">{machinePhotos.map(photo => <div className="machine-photo-item" key={photo.id}><button type="button" className="photo-preview-trigger" onClick={() => setPreviewPhoto(photo)} aria-label="Visa bilden större"><img src={photo.publicUrl} alt="Bild på maskinen" /></button><button type="button" className={photo.is_primary ? 'primary' : ''} onClick={() => setPrimaryPhoto(photo)} disabled={photoBusy}>{photo.is_primary ? 'Huvudbild' : 'Välj som huvudbild'}</button><button type="button" className="photo-delete-button" onClick={() => deleteMachinePhoto(photo)} disabled={photoBusy}><Trash2 size={14} /> Ta bort</button></div>)}</div>}
       </div>
-      <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{selectedReservationId && <p className="muted">Du hanterar en specifik kundreservation. Försäljning sker från den reservationen.</p>}<p>I lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverade: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
-      {!selectedReservationId && Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0) > 0 && <><label className="full">Antal att sälja direkt<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(null)} disabled={saving}>Sälj från lagret</button></>}
-      {detailReservations.length > 0 && <><h3>{selectedReservationId ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)} · {profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</small><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)}><Ban size={16} /> Avboka återstående antal</button></div>; })}</>}
-      {!selectedReservationId && <button onClick={() => { setReservationQuantity('1'); setShowReservation(true); }} disabled={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)) <= 0}><CalendarDays size={16} /> Reservera</button>}
-      {selectedReservationId && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
+      <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{isReservationContext && <p className="muted">Du hanterar en specifik kundreservation. Försäljning sker från den reservationen.</p>}<p>I lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverade: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
+      {!isReservationContext && Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0) > 0 && <><label className="full">Antal att sälja direkt<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(null)} disabled={saving}>Sälj från lagret</button></>}
+      {detailReservations.length > 0 && <><h3>{isReservationContext ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)} · {profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</small><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)}><Ban size={16} /> Avboka återstående antal</button></div>; })}</>}
+      {!isReservationContext && <button onClick={() => { setReservationQuantity('1'); setShowReservation(true); }} disabled={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)) <= 0}><CalendarDays size={16} /> Reservera</button>}
+      {isReservationContext && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
       </div>
       <div className="detail-section inventory-controls"><h3>Lager och leveranser</h3><div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div><div className="quantity-control"><div className="quantity-heading"><strong>Antal på väg hem</strong><span>Beställt men ännu inte levererat</span></div><input aria-label="Antal på väg hem" type="number" min="0" step="1" value={incomingEdit} onChange={e => setIncomingEdit(e.target.value)} /><button onClick={saveIncomingQuantity} disabled={Number(incomingEdit) === Number(selected.incoming_quantity || 0)}>Spara antal på väg hem</button>{Number(selected.incoming_quantity || 0) > 0 && <div className="receive-panel"><p className="muted">Ta emot en hel eller del av leveransen. Antalet flyttas då till lagret.</p><label><strong>Antal mottagna</strong><input type="number" min="1" max={Number(selected.incoming_quantity)} step="1" value={receiveQuantity} onChange={e => setReceiveQuantity(e.target.value)} /></label><button className="primary" onClick={receiveIncomingQuantity}>Ta emot leverans</button></div>}</div>{Number(selected.sold_quantity || 0) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}</div>
       {Number(selected.sold_quantity || 0) > 0 && <div className="dialog-actions"><button onClick={restoreSoldMachine}>Återställ 1 såld till lager</button></div>}
