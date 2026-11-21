@@ -4,6 +4,7 @@ import { Search, Plus, LogOut, RefreshCw, X, Package, Clock3, CheckCircle2, Tag,
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld' };
+const displayMachineStatus = machine => Number(machine.stock_quantity ?? 1) <= 0 && Number(machine.sold_quantity || 0) > 0 ? 'sold' : machine.status;
 const emptyForm = { machine_number: '', brand: '', model: '', year: '', hours: '', price: '', stock_quantity: '1', description: '' };
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY;
 
@@ -40,6 +41,7 @@ export default function App() {
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordNotice, setPasswordNotice] = useState('');
   const [form, setForm] = useState(emptyForm);
+  const [stockEdit, setStockEdit] = useState('1');
   const [customerName, setCustomerName] = useState('');
   const [reservedBy, setReservedBy] = useState('');
   const [reservationDate, setReservationDate] = useState('');
@@ -480,7 +482,8 @@ export default function App() {
   }
 
   async function loadMachineDetails(machine) {
-    setSelected(machine); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservation(null);
+    setSelected(machine);
+    setStockEdit(String(machine.stock_quantity ?? 1)); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservation(null);
     const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
@@ -624,6 +627,18 @@ export default function App() {
     if (mError) setError(mError.message); else { await loadMachines(); await loadMachineDetails({ ...selected, status: 'in_stock' }); }
   }
 
+  async function saveStockQuantity() {
+    if (!selected) return;
+    const nextStock = Number.parseInt(stockEdit, 10);
+    if (!Number.isInteger(nextStock) || nextStock < 0) { setError('Ange ett giltigt antal, 0 eller högre.'); return; }
+    const nextStatus = nextStock > 0 ? (selected.status === 'reserved' ? 'reserved' : 'in_stock') : (Number(selected.sold_quantity || 0) > 0 ? 'sold' : selected.status);
+    const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: nextStatus }).eq('id', selected.id);
+    if (error) { setError('Lagersaldot kunde inte uppdateras: ' + error.message); return; }
+    const updated = { ...selected, stock_quantity: nextStock, status: nextStatus };
+    setSelected(updated);
+    await loadMachines();
+  }
+
   async function markSold() {
     if (!selected) return;
     const currentStock = Math.max(0, Number(selected.stock_quantity ?? 1));
@@ -753,6 +768,7 @@ export default function App() {
       .admin-refresh-button{display:inline-flex;align-items:center;gap:7px;background:#242424;color:#eee;border:1px solid #555;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
       .admin-refresh-button:disabled{opacity:.55;cursor:wait}
       .machine-photo img{width:100%;height:100%;object-fit:cover;border-radius:10px}
+      .status.partial_sold{background:#493817;color:#f2c66d;border:1px solid #765b25}
       .machine-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:12px;margin-top:14px}
       .machine-photo-item{min-width:0;display:flex;flex-direction:column;gap:7px}
       .machine-photo-item img{width:100%;height:115px;object-fit:cover;border-radius:8px;border:1px solid #444}
@@ -825,9 +841,9 @@ export default function App() {
       ))}
     </section>
     {error && <div className="error-banner">{error}</div>}
-    {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + machine.status}>{statusLabel[machine.status] || machine.status}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="details"><span>Antal i lager: <strong>{Number(machine.stock_quantity ?? 1)} st</strong></span>{Number(machine.sold_quantity || 0) > 0 && <span>Sålda: <strong>{Number(machine.sold_quantity)} st</strong></span>}</div><strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
+    {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'Såld' : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="details"><span>Antal i lager: <strong>{Number(machine.stock_quantity ?? 1)} st</strong></span>{Number(machine.sold_quantity || 0) > 0 && <span>Sålda: <strong>{Number(machine.sold_quantity)} st</strong></span>}</div><strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
 
-    {selected && <div className="overlay" onClick={() => setSelected(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setSelected(null)}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[selected.status] || selected.status}</p><p className="muted"><strong>Antal i lager:</strong> {Number(selected.stock_quantity ?? 1)} st</p>{Number(selected.sold_quantity || 0) > 0 && <p className="muted"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}
+    {selected && <div className="overlay" onClick={() => setSelected(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setSelected(null)}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[displayMachineStatus(selected)] || displayMachineStatus(selected)}</p><div className="detail-section"><label><strong>Antal i lager</strong><input type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /></label><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button>{Number(selected.sold_quantity || 0) > 0 && <p className="muted"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}</div>
       <div className="detail-section">
         <h3>Maskinbilder</h3>
         <p className="muted">Ta ett nytt foto eller välj bilder från telefonen. Du kan lägga till flera bilder.</p>
