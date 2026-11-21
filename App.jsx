@@ -12,6 +12,8 @@ export default function App() {
   const [profiles, setProfiles] = useState([]);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
+  const [machinePhotos, setMachinePhotos] = useState([]);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [activeReservation, setActiveReservation] = useState(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -83,7 +85,27 @@ export default function App() {
     if (!session) return;
     setLoading(true); setError('');
     const { data, error } = await supabase.from('machines').select('*').eq('is_deleted', false).order('created_at', { ascending: false });
-    if (error) setError(error.message); else setMachines(data || []);
+    if (error) {
+      setError(error.message);
+    } else {
+      const rows = data || [];
+      const { data: photoRows, error: photoError } = await supabase
+        .from('machine_photos')
+        .select('id, machine_id, storage_path, is_primary')
+        .in('machine_id', rows.map(machine => machine.id).length ? rows.map(machine => machine.id) : ['00000000-0000-0000-0000-000000000000']);
+      if (photoError) {
+        setError('Maskinerna kunde hämtas, men bilderna kunde inte hämtas: ' + photoError.message);
+        setMachines(rows);
+      } else {
+        const primaryByMachine = {};
+        (photoRows || []).forEach(photo => {
+          if (photo.is_primary && !primaryByMachine[photo.machine_id]) {
+            primaryByMachine[photo.machine_id] = supabase.storage.from('machine-photos').getPublicUrl(photo.storage_path).data.publicUrl;
+          }
+        });
+        setMachines(rows.map(machine => ({ ...machine, main_photo_url: primaryByMachine[machine.id] || null })));
+      }
+    }
     setLoading(false);
   }
 
@@ -191,15 +213,79 @@ export default function App() {
   }
 
   async function loadMachineDetails(machine) {
-    setSelected(machine); setError(''); setComments([]); setHistory([]); setActiveReservation(null);
-    const [c, h, r] = await Promise.all([
+    setSelected(machine); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservation(null);
+    const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
-      supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').maybeSingle()
+      supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').maybeSingle(),
+      supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true })
     ]);
     if (c.error) setError(c.error.message); else setComments(c.data || []);
     if (h.error) setError(h.error.message); else setHistory(h.data || []);
     if (r.error) setError(r.error.message); else setActiveReservation(r.data || null);
+    if (p.error) setError('Kunde inte hämta maskinbilder: ' + p.error.message);
+    else setMachinePhotos((p.data || []).map(photo => ({
+      ...photo,
+      publicUrl: supabase.storage.from('machine-photos').getPublicUrl(photo.storage_path).data.publicUrl
+    })));
+  }
+
+  async function uploadMachinePhotos(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!selected || !files.length) return;
+    setPhotoBusy(true);
+    setError('');
+    const { data: { user } } = await supabase.auth.getUser();
+    let uploadError = '';
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) {
+        uploadError = 'Välj endast bildfiler.';
+        break;
+      }
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storagePath = `${selected.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+      const { error: storageError } = await supabase.storage.from('machine-photos').upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type
+      });
+      if (storageError) {
+        uploadError = storageError.message;
+        break;
+      }
+      const { error: rowError } = await supabase.from('machine_photos').insert({
+        machine_id: selected.id,
+        storage_path: storagePath,
+        is_primary: machinePhotos.length === 0 && files.indexOf(file) === 0,
+        created_by: user.id
+      });
+      if (rowError) {
+        await supabase.storage.from('machine-photos').remove([storagePath]);
+        uploadError = rowError.message;
+        break;
+      }
+    }
+    if (uploadError) setError('Bilden kunde inte sparas: ' + uploadError);
+    await loadMachineDetails(selected);
+    await loadMachines();
+    setPhotoBusy(false);
+  }
+
+  async function setPrimaryPhoto(photo) {
+    if (!selected) return;
+    setPhotoBusy(true);
+    setError('');
+    const { error: clearError } = await supabase.from('machine_photos').update({ is_primary: false }).eq('machine_id', selected.id);
+    if (clearError) {
+      setError('Kunde inte uppdatera huvudbild: ' + clearError.message);
+    } else {
+      const { error } = await supabase.from('machine_photos').update({ is_primary: true }).eq('id', photo.id);
+      if (error) setError('Kunde inte välja huvudbild: ' + error.message);
+    }
+    await loadMachineDetails(selected);
+    await loadMachines();
+    setPhotoBusy(false);
   }
 
   async function changeStatus(machine, status) {
@@ -306,6 +392,13 @@ export default function App() {
       .main-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:11px 18px;border-radius:9px;border:1px solid #3b3b3b;background:#202020;color:#c9c9c9;font-weight:650;cursor:pointer;transition:background .15s,border-color .15s}
       .main-tabs button.active{background:#3a1719;border-color:#d92730;color:#fff}
       .announcement-list{display:grid;gap:16px;margin-top:22px}
+      .machine-photo img{width:100%;height:100%;object-fit:cover;border-radius:10px}
+      .machine-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:12px;margin-top:14px}
+      .machine-photo-item{min-width:0;display:flex;flex-direction:column;gap:7px}
+      .machine-photo-item img{width:100%;height:115px;object-fit:cover;border-radius:8px;border:1px solid #444}
+      .machine-photo-item button{font-size:12px;padding:8px 6px}
+      .detail-section label.primary,.detail-section label.button{padding:10px 14px;border-radius:8px}
+      .detail-section label.button{background:#292929;color:#eee;border:1px solid #555}
       .announcement-card{width:100%;max-width:none;background:#191919;border:1px solid #353535;border-radius:12px;padding:22px}
       .announcement-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;color:#e45a60;font-size:13px;font-weight:700}
       .announcement-meta small{color:#999;font-weight:400}
@@ -327,9 +420,24 @@ export default function App() {
     <section className="stats"><div><Package /><strong>{machines.length}</strong><span>Totalt</span></div><div><Tag /><strong>{machines.filter(m => m.status === 'in_stock').length}</strong><span>I lager</span></div><div><Clock3 /><strong>{machines.filter(m => m.status === 'reserved').length}</strong><span>Reserverade</span></div><div><CheckCircle2 /><strong>{machines.filter(m => m.status === 'sold').length}</strong><span>Sålda</span></div></section>
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filters">{[['all','Alla'],['in_stock','I lager'],['reserved','Reserverade'],['sold','Sålda']].map(([value,label]) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{label}</button>)}</div></section>
     {error && <div className="error-banner">{error}</div>}
-    {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo"><Package size={36} /><span className={'status ' + machine.status}>{statusLabel[machine.status] || machine.status}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
+    {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + machine.status}>{statusLabel[machine.status] || machine.status}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
 
     {selected && <div className="overlay" onClick={() => setSelected(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setSelected(null)}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[selected.status] || selected.status}</p>
+      <div className="detail-section">
+        <h3>Maskinbilder</h3>
+        <p className="muted">Ta ett nytt foto eller välj bilder från telefonen. Du kan lägga till flera bilder.</p>
+        <div className="dialog-actions">
+          <label className="primary" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: photoBusy ? 'wait' : 'pointer', opacity: photoBusy ? 0.6 : 1 }}>
+            {photoBusy ? 'Sparar bilder…' : 'Ta foto'}
+            <input type="file" accept="image/*" capture="environment" onChange={uploadMachinePhotos} disabled={photoBusy} style={{ display: 'none' }} />
+          </label>
+          <label className="button" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: photoBusy ? 'wait' : 'pointer', opacity: photoBusy ? 0.6 : 1 }}>
+            Välj bilder
+            <input type="file" accept="image/*" multiple onChange={uploadMachinePhotos} disabled={photoBusy} style={{ display: 'none' }} />
+          </label>
+        </div>
+        {machinePhotos.length === 0 ? <p className="muted">Inga bilder uppladdade ännu.</p> : <div className="machine-photo-gallery">{machinePhotos.map(photo => <div className="machine-photo-item" key={photo.id}><img src={photo.publicUrl} alt="Bild på maskinen" /><button type="button" className={photo.is_primary ? 'primary' : ''} onClick={() => setPrimaryPhoto(photo)} disabled={photoBusy}>{photo.is_primary ? 'Huvudbild' : 'Välj som huvudbild'}</button></div>)}</div>}
+      </div>
       {selected.status === 'in_stock' && <div className="dialog-actions"><button onClick={() => setShowReservation(true)}><CalendarDays size={16} /> Reservera</button><button className="primary" onClick={markSold}>Markera såld</button></div>}
       {selected.status === 'reserved' && <div className="reservation-info"><h3>Aktiv reservation</h3>{activeReservation ? <><p>Kund: {activeReservation.customer_name}</p><p>Ansvarig säljare: {profiles.find(p => p.id === activeReservation.reserved_by)?.full_name || 'Namn saknas'}</p><p>Datum: {date(activeReservation.reservation_date)}</p><button onClick={cancelReservation}><Ban size={16} /> Avboka reservation</button><button className="primary" onClick={markSold}>Markera såld</button></> : <><p>Maskinen är markerad som reserverad, men ingen aktiv reservation hittades.</p><button onClick={() => changeStatus(selected,'in_stock')}>Återställ till I lager</button></>}</div>}
       {selected.status === 'sold' && <div className="dialog-actions"><button onClick={() => changeStatus(selected,'in_stock')}>Återställ till I lager</button></div>}
