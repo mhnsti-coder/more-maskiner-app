@@ -276,11 +276,14 @@ export default function App() {
     setLoading(false);
   }
 
-  async function loadReservations() {
+  async function loadReservations(silent = false) {
     if (!session) return;
     const { data, error } = await supabase.from('reservations')
       .select('*').eq('status', 'active').order('reservation_date', { ascending: false });
-    if (error) { setError('Kunde inte hämta reservationer: ' + error.message); return; }
+    if (error) {
+      if (!silent) setError('Kunde inte hämta reservationer: ' + error.message);
+      return;
+    }
     setReservations(data || []);
   }
 
@@ -464,7 +467,7 @@ export default function App() {
     }
   }
 
-  useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); } }, [session]);
+  useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); loadReservations(true); } }, [session]);
 
   const filtered = useMemo(() => machines.filter(m => {
     const q = search.toLowerCase();
@@ -932,6 +935,17 @@ export default function App() {
         .app-shell .stats{grid-template-columns:repeat(2,minmax(0,1fr));}
         .app-shell .machine-grid{grid-template-columns:minmax(0,1fr);}
       }
+      .home-quick-overview{margin:22px 0 24px;padding:0;border-bottom:1px solid #303030}
+      .home-quick-heading{margin:0 0 5px;color:#aaa;font-size:10px;font-weight:800;letter-spacing:.14em}
+      .home-quick-row{display:flex;align-items:center;gap:11px;width:100%;min-width:0;padding:11px 2px;background:transparent;border:0;border-top:1px solid #292929;border-radius:0;color:#f3f3f3;text-align:left;cursor:pointer}
+      .home-quick-row:last-child{border-bottom:0}
+      .home-quick-icon{display:flex;align-items:center;justify-content:center;flex:0 0 25px;color:#e43b45}
+      .home-quick-copy{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
+      .home-quick-copy strong{font-size:13px;font-weight:700;line-height:1.25}
+      .home-quick-copy small{overflow:hidden;color:#999;font-size:11px;line-height:1.3;text-overflow:ellipsis;white-space:nowrap}
+      .home-quick-action{display:flex;align-items:center;gap:5px;flex:0 0 auto;color:#d94a50;font-size:11px;font-weight:700}
+      .home-quick-row:focus-visible{outline:2px solid #d92730;outline-offset:2px;border-radius:5px}
+      @media(min-width:700px){.home-quick-overview{max-width:680px}.home-quick-row{padding:12px 3px}}
       .main-tabs{display:flex;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
@@ -1145,6 +1159,25 @@ export default function App() {
           <Icon /><strong>{count}</strong><span>{label}</span>
         </div>
       ))}
+    </section>
+    <section className="home-quick-overview" aria-label="Min översikt">
+      <p className="home-quick-heading">MIN ÖVERSIKT</p>
+      <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}>
+        <span className="home-quick-icon"><CalendarDays size={18} /></span>
+        <span className="home-quick-copy">
+          <strong>Mina reservationer</strong>
+          <small>{reservations.filter(r => r.reserved_by === session?.user?.id).length} aktiva reservationer</small>
+        </span>
+        <span className="home-quick-action">Visa <span aria-hidden="true">›</span></span>
+      </button>
+      {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(true); setShowReservations(false); setShowAdmin(false); loadAnnouncements(); }}>
+        <span className="home-quick-icon"><Megaphone size={18} /></span>
+        <span className="home-quick-copy">
+          <strong>Senaste Interninfo</strong>
+          <small>{announcements[0].title || 'Nytt inlägg publicerat'}</small>
+        </span>
+        <span className="home-quick-action">Läs <span aria-hidden="true">›</span></span>
+      </button>}
     </section>
     {error && <div className="error-banner">{error}</div>}
     {loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'Såld' : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.machine_number || 'Inget maskinnummer'}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{Number(machine.stock_quantity ?? 1)}</strong><small>I lager</small></span><span><strong>{Number(machine.reserved_quantity || 0)}</strong><small>Reserverade</small></span><span><strong>{Number(machine.sold_quantity || 0)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr` : 'Pris saknas'}</strong></div></button>)}</section>}
