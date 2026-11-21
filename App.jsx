@@ -25,7 +25,9 @@ export default function App() {
   const [machinePhotos, setMachinePhotos] = useState([]);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState(null);
-  const [activeReservation, setActiveReservation] = useState(null);
+  const [activeReservations, setActiveReservations] = useState([]);
+  const [reservationQuantity, setReservationQuantity] = useState('1');
+  const [saleQuantity, setSaleQuantity] = useState('1');
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
@@ -233,13 +235,17 @@ export default function App() {
       setError(error.message);
     } else {
       const rows = data || [];
+      const { data: reservationRows, error: reservationRowsError } = await supabase.from('reservations').select('machine_id, quantity, fulfilled_quantity').eq('status', 'active');
+      const reservedByMachine = {};
+      (reservationRows || []).forEach(r => { reservedByMachine[r.machine_id] = (reservedByMachine[r.machine_id] || 0) + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); });
+      const rowsWithReservations = rows.map(m => ({ ...m, reserved_quantity: reservedByMachine[m.id] || 0, available_quantity: Math.max(0, Number(m.stock_quantity ?? 1) - (reservedByMachine[m.id] || 0)) }));
       const { data: photoRows, error: photoError } = await supabase
         .from('machine_photos')
         .select('id, machine_id, storage_path, is_primary')
         .in('machine_id', rows.map(machine => machine.id).length ? rows.map(machine => machine.id) : ['00000000-0000-0000-0000-000000000000']);
       if (photoError) {
         setError('Maskinerna kunde hämtas, men bilderna kunde inte hämtas: ' + photoError.message);
-        setMachines(rows);
+        setMachines(rowsWithReservations);
       } else {
         const primaryByMachine = {};
         (photoRows || []).forEach(photo => {
@@ -247,7 +253,7 @@ export default function App() {
             primaryByMachine[photo.machine_id] = supabase.storage.from('machine-photos').getPublicUrl(photo.storage_path).data.publicUrl;
           }
         });
-        setMachines(rows.map(machine => ({ ...machine, main_photo_url: primaryByMachine[machine.id] || null })));
+        setMachines(rowsWithReservations.map(machine => ({ ...machine, main_photo_url: primaryByMachine[machine.id] || null }))); 
       }
     }
     setLoading(false);
@@ -438,7 +444,7 @@ export default function App() {
   const filtered = useMemo(() => machines.filter(m => {
     const q = search.toLowerCase();
     const matches = [m.machine_number, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
-    return matches && (filter === 'all' || (filter === 'sold' ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : m.status === filter));
+    return matches && (filter === 'all' || (filter === 'sold' ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? Number(m.reserved_quantity || 0) > 0 : filter === 'in_stock' ? Number(m.available_quantity ?? m.stock_quantity ?? 1) > 0 : m.status === filter));
   }), [machines, search, filter]);
 
   async function signIn(event) {
@@ -484,17 +490,20 @@ export default function App() {
   }
 
   async function loadMachineDetails(machine) {
+    const { data: freshMachine, error: freshMachineError } = await supabase.from('machines').select('*').eq('id', machine.id).single();
+    if (freshMachineError) { setError(freshMachineError.message); return; }
+    machine = { ...machine, ...freshMachine };
     setSelected(machine);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservation(null);
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
     const [c, h, r, p] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
-      supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').maybeSingle(),
+      supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').order('created_at', { ascending: false }),
       supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true })
     ]);
     if (c.error) setError(c.error.message); else setComments(c.data || []);
     if (h.error) setError(h.error.message); else setHistory(h.data || []);
-    if (r.error) setError(r.error.message); else setActiveReservation(r.data || null);
+    if (r.error) setError(r.error.message); else { const reservations = r.data || []; setActiveReservations(reservations); const reservedQuantity = reservations.reduce((n, item) => n + Math.max(0, Number(item.quantity || 1) - Number(item.fulfilled_quantity || 0)), 0); setSelected(current => current?.id === machine.id ? { ...current, reserved_quantity: reservedQuantity, available_quantity: Math.max(0, Number(current.stock_quantity ?? 1) - reservedQuantity) } : current); }
     if (p.error) setError('Kunde inte hämta maskinbilder: ' + p.error.message);
     else setMachinePhotos((p.data || []).map(photo => ({
       ...photo,
@@ -607,32 +616,34 @@ export default function App() {
 
   async function createReservation(event) {
     event.preventDefault(); if (!selected) return;
+    const amount = Number.parseInt(reservationQuantity, 10);
+    if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att reservera.'); return; }
     setSaving(true); setError('');
-    const { data: { user } } = await supabase.auth.getUser();
-    const { error: reservationError } = await supabase.from('reservations').insert({ machine_id: selected.id, customer_name: customerName, reserved_by: reservedBy || user.id, reservation_date: reservationDate || null, status: 'active' });
-    if (reservationError) { setError(reservationError.message); setSaving(false); return; }
-    const { error: machineError } = await supabase.from('machines').update({ status: 'reserved' }).eq('id', selected.id);
-    if (machineError) setError('Reservationen sparades, men maskinens status kunde inte uppdateras: ' + machineError.message);
+    const { data, error: reservationError } = await supabase.rpc('reserve_machine', {
+      p_machine_id: selected.id, p_customer_name: customerName, p_reservation_date: reservationDate || null, p_quantity: amount, p_reserved_by: reservedBy || null
+    });
+    if (reservationError) setError(reservationError.message);
     else {
-      setShowReservation(false); setCustomerName(''); setReservedBy(''); setReservationDate('');
-      await loadMachines(); await loadMachineDetails({ ...selected, status: 'reserved' });
+      setShowReservation(false); setCustomerName(''); setReservedBy(''); setReservationDate(''); setReservationQuantity('1');
+      await loadMachines(); await loadMachineDetails(selected);
     }
     setSaving(false);
   }
 
-  async function cancelReservation() {
-    if (!selected || !activeReservation) return;
+  async function cancelReservation(reservationId) {
+    if (!selected || !reservationId) return;
     setError('');
-    const { error: rError } = await supabase.from('reservations').update({ status: 'cancelled' }).eq('id', activeReservation.id);
-    if (rError) { setError(rError.message); return; }
-    const { error: mError } = await supabase.from('machines').update({ status: 'in_stock' }).eq('id', selected.id);
-    if (mError) setError(mError.message); else { await loadMachines(); await loadMachineDetails({ ...selected, status: 'in_stock' }); }
+    const { error } = await supabase.rpc('cancel_machine_reservation', { p_reservation_id: reservationId });
+    if (error) { setError(error.message); return; }
+    await loadMachines(); await loadMachineDetails(selected);
   }
 
   async function saveStockQuantity() {
     if (!selected) return;
     const nextStock = Number.parseInt(stockEdit, 10);
     if (!Number.isInteger(nextStock) || nextStock < 0) { setError('Ange ett giltigt antal, 0 eller högre.'); return; }
+    const reservedNow = activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0);
+    if (nextStock < reservedNow) { setError(`Lagersaldot kan inte sättas lägre än ${reservedNow} eftersom så många exemplar är reserverade.`); return; }
     const nextStatus = nextStock > 0 ? (selected.status === 'reserved' ? 'reserved' : 'in_stock') : (Number(selected.incoming_quantity || 0) > 0 ? 'incoming' : Number(selected.sold_quantity || 0) > 0 ? 'sold' : selected.status);
     const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: nextStatus }).eq('id', selected.id);
     if (error) { setError('Lagersaldot kunde inte uppdateras: ' + error.message); return; }
@@ -668,21 +679,17 @@ export default function App() {
     await loadMachines();
   }
 
-  async function markSold() {
+  async function markSold(reservationId = null) {
     if (!selected) return;
-    const currentStock = Math.max(0, Number(selected.stock_quantity ?? 1));
-    if (currentStock <= 0) { setError('Det finns inga maskiner kvar i lager att sälja.'); return; }
-    if (activeReservation) {
-      const { error } = await supabase.from('reservations').update({ status: 'completed' }).eq('id', activeReservation.id);
-      if (error) { setError(error.message); return; }
-    }
-    const nextStock = currentStock - 1;
-    const nextSold = Math.max(0, Number(selected.sold_quantity || 0)) + 1;
-    const nextStatus = nextStock > 0 ? 'in_stock' : 'sold';
-    const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, sold_quantity: nextSold, status: nextStatus }).eq('id', selected.id);
-    if (error) { setError(error.message); return; }
-    setSelected(null);
-    await loadMachines();
+    const amount = Number.parseInt(saleQuantity, 10);
+    if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att sälja.'); return; }
+    setError(''); setSaving(true);
+    const { error } = await supabase.rpc('sell_machine_quantity', {
+      p_machine_id: selected.id, p_quantity: amount, p_reservation_id: reservationId
+    });
+    if (error) setError(error.message);
+    else { setSaleQuantity('1'); await loadMachines(); await loadMachineDetails(selected); }
+    setSaving(false);
   }
 
   async function restoreSoldMachine() {
@@ -691,9 +698,10 @@ export default function App() {
     const currentSold = Math.max(0, Number(selected.sold_quantity || 0));
     if (currentSold <= 0) { setError('Det finns inga sålda exemplar att återställa.'); return; }
     const nextSold = currentSold - 1;
-    const { error } = await supabase.from('machines').update({ stock_quantity: currentStock + 1, sold_quantity: nextSold, status: 'in_stock' }).eq('id', selected.id);
+    const restoredStock = currentStock + 1; const reservedNow = activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0); const restoredStatus = reservedNow > 0 ? 'reserved' : 'in_stock';
+    const { error } = await supabase.from('machines').update({ stock_quantity: restoredStock, sold_quantity: nextSold, status: restoredStatus }).eq('id', selected.id);
     if (error) setError(error.message);
-    else { await loadMachines(); await loadMachineDetails({ ...selected, stock_quantity: currentStock + 1, sold_quantity: nextSold, status: 'in_stock' }); }
+    else { await loadMachines(); await loadMachineDetails({ ...selected, stock_quantity: restoredStock, sold_quantity: nextSold, status: restoredStatus }); }
   }
 
   async function addComment(event) {
@@ -860,7 +868,7 @@ export default function App() {
       {[
         { value: 'in_stock', label: 'I lager', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Tag },
         { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
-        { value: 'reserved', label: 'Reserverade', count: machines.filter(m => m.status === 'reserved').reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1)), 0), Icon: Clock3 },
+        { value: 'reserved', label: 'Reserverade', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.reserved_quantity || 0)), 0), Icon: Clock3 },
         { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.sold_quantity || 0)), 0), Icon: CheckCircle2 }
       ].map(({ value, label, count, Icon }) => (
         <div
@@ -901,15 +909,18 @@ export default function App() {
         </div>
         {machinePhotos.length === 0 ? <p className="muted">Inga bilder uppladdade ännu.</p> : <div className="machine-photo-gallery">{machinePhotos.map(photo => <div className="machine-photo-item" key={photo.id}><button type="button" className="photo-preview-trigger" onClick={() => setPreviewPhoto(photo)} aria-label="Visa bilden större"><img src={photo.publicUrl} alt="Bild på maskinen" /></button><button type="button" className={photo.is_primary ? 'primary' : ''} onClick={() => setPrimaryPhoto(photo)} disabled={photoBusy}>{photo.is_primary ? 'Huvudbild' : 'Välj som huvudbild'}</button><button type="button" className="photo-delete-button" onClick={() => deleteMachinePhoto(photo)} disabled={photoBusy}><Trash2 size={14} /> Ta bort</button></div>)}</div>}
       </div>
-      {selected.status === 'in_stock' && <div className="dialog-actions"><button onClick={() => setShowReservation(true)}><CalendarDays size={16} /> Reservera</button><button className="primary" onClick={markSold}>Markera såld</button></div>}
-      {selected.status === 'reserved' && <div className="reservation-info"><h3>Aktiv reservation</h3>{activeReservation ? <><p>Kund: {activeReservation.customer_name}</p><p>Ansvarig säljare: {profiles.find(p => p.id === activeReservation.reserved_by)?.full_name || 'Namn saknas'}</p><p>Datum: {date(activeReservation.reservation_date)}</p><button onClick={cancelReservation}><Ban size={16} /> Avboka reservation</button><button className="primary" onClick={markSold}>Markera såld</button></> : <><p>Maskinen är markerad som reserverad, men ingen aktiv reservation hittades.</p><button onClick={() => changeStatus(selected,'in_stock')}>Återställ till I lager</button></>}</div>}
+      <div className="reservation-info inventory-summary"><h3>Lager och reservationer</h3><p>I lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverade: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
+      {Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0) > 0 && <><label className="full">Antal att sälja direkt<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(null)} disabled={saving}>Sälj från lagret</button></>}
+      {activeReservations.length > 0 && <><h3>Aktiva reservationer</h3>{activeReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)} · {profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</small><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)}><Ban size={16} /> Avboka återstående antal</button></div>; })}</>}
+      <button onClick={() => { setReservationQuantity('1'); setShowReservation(true); }} disabled={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)) <= 0}><CalendarDays size={16} /> Reservera</button>
+      </div>
       {Number(selected.sold_quantity || 0) > 0 && <div className="dialog-actions"><button onClick={restoreSoldMachine}>Återställ 1 såld till lager</button></div>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
       <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
-    {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
+    {showReservation && selected && <div className="overlay" onClick={() => setShowReservation(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
     {showAdmin && isAdmin && <div className="overlay" onClick={() => setShowAdmin(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdmin(false)}><X /></button><p className="eyebrow">ADMINISTRATION</p><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}</div></section></div>}
 
