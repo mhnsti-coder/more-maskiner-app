@@ -75,6 +75,7 @@ export default function App() {
   const [recoveryLink, setRecoveryLink] = useState('');
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [announcements, setAnnouncements] = useState([]);
+  const [readAnnouncementIds, setReadAnnouncementIds] = useState([]);
   const [announcementComments, setAnnouncementComments] = useState({});
   const [announcementAttachments, setAnnouncementAttachments] = useState({});
   const [announcementFiles, setAnnouncementFiles] = useState([]);
@@ -93,6 +94,42 @@ export default function App() {
   const [pushMessage, setPushMessage] = useState('');
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isAdmin = currentProfile?.role === 'admin';
+  const unreadAnnouncementCount = announcements.filter(
+    item => !item.deleted_at && !readAnnouncementIds.includes(item.id)
+  ).length;
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setReadAnnouncementIds([]);
+      return;
+    }
+    try {
+      const stored = localStorage.getItem(`more-read-announcements-${session.user.id}`);
+      setReadAnnouncementIds(stored ? JSON.parse(stored) : []);
+    } catch {
+      setReadAnnouncementIds([]);
+    }
+  }, [session?.user?.id]);
+
+  function markAnnouncementsAsRead(posts) {
+    if (!session?.user?.id) return;
+    const ids = [...new Set([...(readAnnouncementIds || []), ...(posts || []).map(item => item.id)])];
+    setReadAnnouncementIds(ids);
+    try {
+      localStorage.setItem(`more-read-announcements-${session.user.id}`, JSON.stringify(ids));
+    } catch {
+      // Lässtatusen fungerar under den här sessionen även om lokal lagring inte är tillgänglig.
+    }
+  }
+
+  async function openInternInfo() {
+    setShowInternInfo(true);
+    setShowReservations(false);
+    setShowAdmin(false);
+    const posts = await loadAnnouncements();
+    markAnnouncementsAsRead(posts || announcements);
+  }
+
 
   function needsPasswordSetup(user) {
     if (!user) return false;
@@ -324,10 +361,12 @@ export default function App() {
         }));
         setAnnouncementAttachments(groupedAttachments);
       }
+      return visibleAnnouncements || [];
     } else {
       setAnnouncements([]);
       setAnnouncementComments({});
       setAnnouncementAttachments({});
+      return [];
     }
   }
 
@@ -950,6 +989,7 @@ export default function App() {
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
       @media(max-width:520px){.top-actions{gap:6px}.push-notification-button{padding:8px 9px;font-size:11px}}
+      .tab-unread-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:2px;border-radius:10px;background:#b92f35;color:#fff;font-size:11px;font-weight:800;line-height:1}
       .main-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:11px 18px;border-radius:9px;border:1px solid #3b3b3b;background:#202020;color:#c9c9c9;font-weight:650;cursor:pointer;transition:background .15s,border-color .15s}
       .main-tabs button.active{background:#3a1719;border-color:#d92730;color:#fff}
       .announcement-list{display:grid;gap:16px;margin-top:22px}
@@ -1118,7 +1158,7 @@ export default function App() {
 
     `}</style>
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button>{isAdmin && <button className="icon-btn" onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }} aria-label="Personaladministration"><Users size={18} /></button>}<button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
-    <nav className="main-tabs"><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); }}><Package size={16} /> Maskiner</button><button className={showReservations ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}><CalendarDays size={16} /> Reservationer</button><button className={showInternInfo ? 'active' : ''} onClick={() => { setShowInternInfo(true); setShowReservations(false); setShowAdmin(false); loadAnnouncements(); }}><Megaphone size={16} /> Interninfo</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
+    <nav className="main-tabs"><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); }}><Package size={16} /> Maskiner</button><button className={showReservations ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}><CalendarDays size={16} /> Reservationer</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadAnnouncementCount > 0 && <span className="tab-unread-badge">{unreadAnnouncementCount > 99 ? '99+' : unreadAnnouncementCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {!showReservations && !showInternInfo && !showAdmin && <>
     <section className="home-quick-overview" aria-label="Min översikt">
@@ -1131,7 +1171,7 @@ export default function App() {
         </span>
         <span className="home-quick-action">Visa <span aria-hidden="true">›</span></span>
       </button>
-      {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(true); setShowReservations(false); setShowAdmin(false); loadAnnouncements(); }}>
+      {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={openInternInfo}>
         <span className="home-quick-icon"><Megaphone size={18} /></span>
         <span className="home-quick-copy">
           <strong>Senaste Interninfo</strong>
