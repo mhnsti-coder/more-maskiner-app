@@ -797,8 +797,12 @@ export default function App() {
     setAdminBusy(false);
   }
 
-  const isReservationContext = selectedReservationId !== null;
-  const detailReservations = isReservationContext ? activeReservations.filter(r => r.id === selectedReservationId) : activeReservations;
+  // En maskin med aktiva kundreservationer ska alltid hanteras via reservationerna,
+  // även när detaljvyn öppnas från maskinlistans filter Reserverade.
+  const isReservationContext = selectedReservationId !== null || activeReservations.length > 0;
+  const detailReservations = selectedReservationId !== null
+    ? activeReservations.filter(r => r.id === selectedReservationId)
+    : activeReservations;
   const date = value => value ? new Date(value).toLocaleDateString('sv-SE') : '–';
   const dateTime = value => value ? new Date(value).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '';
 
