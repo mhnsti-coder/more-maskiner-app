@@ -935,7 +935,7 @@ export default function App() {
         .app-shell .stats{grid-template-columns:repeat(2,minmax(0,1fr));}
         .app-shell .machine-grid{grid-template-columns:minmax(0,1fr);}
       }
-      .home-quick-overview{margin:22px 0 24px;padding:0;border-bottom:1px solid #303030}
+      .home-quick-overview{margin:12px 0 24px;padding:0;border-bottom:1px solid #303030}
       .home-quick-heading{margin:0 0 5px;color:#aaa;font-size:10px;font-weight:800;letter-spacing:.14em}
       .home-quick-row{display:flex;align-items:center;gap:11px;width:100%;min-width:0;padding:11px 2px;background:transparent;border:0;border-top:1px solid #292929;border-radius:0;color:#f3f3f3;text-align:left;cursor:pointer}
       .home-quick-row:last-child{border-bottom:0}
