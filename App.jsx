@@ -700,6 +700,22 @@ export default function App() {
 
   return <main className="app-shell">
     <style>{`
+      /* Säkerställ att appens innehåll alltid följer enhetens faktiska bredd. */
+      .app-shell{width:100%;max-width:1200px;min-width:0;margin-left:auto;margin-right:auto;box-sizing:border-box;}
+      .app-shell *{box-sizing:border-box;}
+      .app-shell .topbar,.app-shell .main-tabs,.app-shell .hero,.app-shell .toolbar,.app-shell .stats,.app-shell .machine-grid{min-width:0;max-width:100%;}
+      .app-shell .search{min-width:0;width:100%;}
+      .app-shell .search input{min-width:0;}
+      .app-shell .stats>div{min-width:0;}
+      .app-shell .machine-card{min-width:0;width:100%;}
+      @media(max-width:520px){
+        .app-shell{width:100%;max-width:100%;padding-left:14px;padding-right:14px;overflow-x:clip;}
+        .app-shell .topbar{width:100%;gap:8px;}
+        .app-shell .top-actions{min-width:0;gap:6px;}
+        .app-shell .push-notification-button{max-width: min(48vw,190px);overflow:hidden;text-overflow:ellipsis;}
+        .app-shell .stats{grid-template-columns:repeat(2,minmax(0,1fr));}
+        .app-shell .machine-grid{grid-template-columns:minmax(0,1fr);}
+      }
       .main-tabs{display:flex;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
