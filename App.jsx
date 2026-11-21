@@ -515,7 +515,7 @@ export default function App() {
     setSelectedReservationId(reservationId);
     // Spara vilken arbetsvy som öppnade detaljen. Förlita oss inte på filterstate
     // när detaljdialogen väl är öppen.
-    setSelectedDetailMode(reservationId !== null || filter === 'reserved' ? 'reservation' : 'stock');
+    setSelectedDetailMode(reservationId !== null || filter === 'reserved' ? 'reservation' : filter === 'sold' ? 'sold' : 'stock');
     const { data: freshMachine, error: freshMachineError } = await supabase.from('machines').select('*').eq('id', machine.id).single();
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
@@ -811,6 +811,7 @@ export default function App() {
   // En maskin med aktiva kundreservationer ska alltid hanteras via reservationerna,
   // även när detaljvyn öppnas från maskinlistans filter Reserverade.
   const isReservationContext = selectedDetailMode === 'reservation' || selectedReservationId !== null;
+  const isSoldContext = selectedDetailMode === 'sold';
   const detailReservations = selectedReservationId !== null
     ? activeReservations.filter(r => r.id === selectedReservationId)
     : activeReservations;
@@ -1072,11 +1073,13 @@ export default function App() {
         </div>
         {machinePhotos.length === 0 ? <p className="muted">Inga bilder uppladdade ännu.</p> : <div className="machine-photo-gallery">{machinePhotos.map(photo => <div className="machine-photo-item" key={photo.id}><button type="button" className="photo-preview-trigger" onClick={() => setPreviewPhoto(photo)} aria-label="Visa bilden större"><img src={photo.publicUrl} alt="Bild på maskinen" /></button><button type="button" className={photo.is_primary ? 'primary' : ''} onClick={() => setPrimaryPhoto(photo)} disabled={photoBusy}>{photo.is_primary ? 'Huvudbild' : 'Välj som huvudbild'}</button><button type="button" className="photo-delete-button" onClick={() => deleteMachinePhoto(photo)} disabled={photoBusy}><Trash2 size={14} /> Ta bort</button></div>)}</div>}
       </div>
+      {!isSoldContext && <>
       <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{isReservationContext && <p className="muted">Du hanterar kundreservationer. Här kan du sälja från eller avboka reservationerna.</p>}<p>I lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverade: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
       {detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)} · {profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</small>{isReservationContext && <><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)}><Ban size={16} /> Avboka återstående antal</button></>}</div>; })}</>}
       {isReservationContext && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
       </div>
-      {!isReservationContext && <div className="stock-actions">
+      </>}
+      {!isReservationContext && !isSoldContext && <div className="stock-actions">
         <h4>Försäljning från lager</h4>
         <p className="muted">Tillgängligt att sälja eller reservera: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p>
         {Math.max(0, Number(selected.stock_quantity ?? 1) - activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)) > 0 && <>
@@ -1085,10 +1088,12 @@ export default function App() {
           <button onClick={() => { setReservationQuantity('1'); setShowReservation(true); }} disabled={saving}><CalendarDays size={16} /> Reservera från lagret</button>
         </>}
       </div>}
+      {!isSoldContext && (
       <div className="detail-section inventory-controls"><h3>Lager och leveranser</h3><div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div><div className="quantity-control"><div className="quantity-heading"><strong>Antal på väg hem</strong><span>Beställt men ännu inte levererat</span></div><input aria-label="Antal på väg hem" type="number" min="0" step="1" value={incomingEdit} onChange={e => setIncomingEdit(e.target.value)} /><button onClick={saveIncomingQuantity} disabled={Number(incomingEdit) === Number(selected.incoming_quantity || 0)}>Spara antal på väg hem</button>{Number(selected.incoming_quantity || 0) > 0 && <div className="receive-panel"><p className="muted">Ta emot en hel eller del av leveransen. Antalet flyttas då till lagret.</p><label><strong>Antal mottagna</strong><input type="number" min="1" max={Number(selected.incoming_quantity)} step="1" value={receiveQuantity} onChange={e => setReceiveQuantity(e.target.value)} /></label><button className="primary" onClick={receiveIncomingQuantity}>Ta emot leverans</button></div>}</div>{Number(selected.sold_quantity || 0) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}
 
       </div>
-      {Number(selected.sold_quantity || 0) > 0 && <div className="dialog-actions"><button onClick={restoreSoldMachine}>Återställ 1 såld till lager</button></div>}
+      )}
+      {isSoldContext && Number(selected.sold_quantity || 0) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{Number(selected.sold_quantity || 0)} st</strong></p><button onClick={restoreSoldMachine} disabled={saving}>Ångra försäljning – återför 1 till lagret</button></section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
       <div className="detail-section"><h3><History size={18} /> Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
