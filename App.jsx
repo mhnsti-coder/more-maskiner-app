@@ -14,6 +14,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [machinePhotos, setMachinePhotos] = useState([]);
   const [photoBusy, setPhotoBusy] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState(null);
   const [activeReservation, setActiveReservation] = useState(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -272,6 +273,33 @@ export default function App() {
     setPhotoBusy(false);
   }
 
+  async function deleteMachinePhoto(photo) {
+    if (!selected || photoBusy) return;
+    if (!window.confirm('Vill du ta bort den här bilden permanent?')) return;
+    setPhotoBusy(true);
+    setError('');
+    const { error: storageError } = await supabase.storage.from('machine-photos').remove([photo.storage_path]);
+    if (storageError) {
+      setError('Bilden kunde inte tas bort: ' + storageError.message);
+      setPhotoBusy(false);
+      return;
+    }
+    const { error: rowError } = await supabase.from('machine_photos').delete().eq('id', photo.id);
+    if (rowError) {
+      setError('Bildfilen togs bort, men bildposten kunde inte tas bort: ' + rowError.message);
+    } else if (photo.is_primary) {
+      const nextPhoto = machinePhotos.find(item => item.id !== photo.id);
+      if (nextPhoto) {
+        const { error: primaryError } = await supabase.from('machine_photos').update({ is_primary: true }).eq('id', nextPhoto.id);
+        if (primaryError) setError('Bilden togs bort, men ny huvudbild kunde inte väljas: ' + primaryError.message);
+      }
+    }
+    if (previewPhoto?.id === photo.id) setPreviewPhoto(null);
+    await loadMachineDetails(selected);
+    await loadMachines();
+    setPhotoBusy(false);
+  }
+
   async function setPrimaryPhoto(photo) {
     if (!selected) return;
     setPhotoBusy(true);
@@ -396,6 +424,12 @@ export default function App() {
       .machine-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:12px;margin-top:14px}
       .machine-photo-item{min-width:0;display:flex;flex-direction:column;gap:7px}
       .machine-photo-item img{width:100%;height:115px;object-fit:cover;border-radius:8px;border:1px solid #444}
+      .photo-preview-trigger{display:block;width:100%;padding:0!important;border:0!important;background:transparent!important;cursor:zoom-in}
+      .photo-delete-button{display:flex;align-items:center;justify-content:center;gap:5px;background:#321b1b!important;color:#ff7777!important;border:1px solid #713535!important}
+      .photo-lightbox{position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.94);display:flex;align-items:center;justify-content:center;padding:54px 16px 35px}
+      .photo-lightbox img{max-width:100%;max-height:82vh;object-fit:contain;border-radius:8px}
+      .photo-lightbox-close{position:absolute;top:18px;right:18px;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:#252525;border:1px solid #555;color:white}
+      .photo-lightbox-caption{position:absolute;bottom:14px;left:0;right:0;text-align:center;color:#ddd;font-size:13px}
       .machine-photo-item button{font-size:12px;padding:8px 6px}
       .detail-section label.primary,.detail-section label.button{padding:10px 14px;border-radius:8px}
       .detail-section label.button{background:#292929;color:#eee;border:1px solid #555}
@@ -436,7 +470,7 @@ export default function App() {
             <input type="file" accept="image/*" multiple onChange={uploadMachinePhotos} disabled={photoBusy} style={{ display: 'none' }} />
           </label>
         </div>
-        {machinePhotos.length === 0 ? <p className="muted">Inga bilder uppladdade ännu.</p> : <div className="machine-photo-gallery">{machinePhotos.map(photo => <div className="machine-photo-item" key={photo.id}><img src={photo.publicUrl} alt="Bild på maskinen" /><button type="button" className={photo.is_primary ? 'primary' : ''} onClick={() => setPrimaryPhoto(photo)} disabled={photoBusy}>{photo.is_primary ? 'Huvudbild' : 'Välj som huvudbild'}</button></div>)}</div>}
+        {machinePhotos.length === 0 ? <p className="muted">Inga bilder uppladdade ännu.</p> : <div className="machine-photo-gallery">{machinePhotos.map(photo => <div className="machine-photo-item" key={photo.id}><button type="button" className="photo-preview-trigger" onClick={() => setPreviewPhoto(photo)} aria-label="Visa bilden större"><img src={photo.publicUrl} alt="Bild på maskinen" /></button><button type="button" className={photo.is_primary ? 'primary' : ''} onClick={() => setPrimaryPhoto(photo)} disabled={photoBusy}>{photo.is_primary ? 'Huvudbild' : 'Välj som huvudbild'}</button><button type="button" className="photo-delete-button" onClick={() => deleteMachinePhoto(photo)} disabled={photoBusy}><Trash2 size={14} /> Ta bort</button></div>)}</div>}
       </div>
       {selected.status === 'in_stock' && <div className="dialog-actions"><button onClick={() => setShowReservation(true)}><CalendarDays size={16} /> Reservera</button><button className="primary" onClick={markSold}>Markera såld</button></div>}
       {selected.status === 'reserved' && <div className="reservation-info"><h3>Aktiv reservation</h3>{activeReservation ? <><p>Kund: {activeReservation.customer_name}</p><p>Ansvarig säljare: {profiles.find(p => p.id === activeReservation.reserved_by)?.full_name || 'Namn saknas'}</p><p>Datum: {date(activeReservation.reservation_date)}</p><button onClick={cancelReservation}><Ban size={16} /> Avboka reservation</button><button className="primary" onClick={markSold}>Markera såld</button></> : <><p>Maskinen är markerad som reserverad, men ingen aktiv reservation hittades.</p><button onClick={() => changeStatus(selected,'in_stock')}>Återställ till I lager</button></>}</div>}
@@ -450,6 +484,11 @@ export default function App() {
 
     {showAdmin && isAdmin && <div className="overlay" onClick={() => setShowAdmin(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdmin(false)}><X /></button><p className="eyebrow">ADMINISTRATION</p><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><h3><ShieldCheck size={18} /> Personal i systemet</h3>{profiles.map(profile => <div className="history-item" key={profile.id}><strong>{profile.full_name || 'Namn saknas'}</strong><small>{profile.role === 'admin' ? 'Administratör' : 'Säljare'}</small></div>)}</div></section></div>}
 
+    {previewPhoto && <div className="photo-lightbox" role="dialog" aria-modal="true" onClick={() => setPreviewPhoto(null)}>
+      <button type="button" className="photo-lightbox-close" onClick={() => setPreviewPhoto(null)} aria-label="Stäng bildvisning"><X size={26} /></button>
+      <img src={previewPhoto.publicUrl} alt="Förstorad bild på maskinen" onClick={event => event.stopPropagation()} />
+      <div className="photo-lightbox-caption">{previewPhoto.is_primary ? 'Huvudbild' : 'Maskinbild'}</div>
+    </div>}
     {showAdd && <div className="overlay" onClick={() => setShowAdd(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdd(false)}><X /></button><p className="eyebrow">NY MASKIN</p><h2>Lägg till maskin</h2><form className="machine-form" onSubmit={addMachine}>{[['machine_number','Maskinnummer'],['brand','Fabrikat'],['model','Modell'],['year','Årsmodell'],['hours','Timmar'],['price','Pris (kr)']].map(([field,label]) => <label key={field}>{label}<input value={form[field]} type={['year','hours','price'].includes(field) ? 'number' : 'text'} onChange={e => setForm({ ...form, [field]: e.target.value })} /></label>)}<label className="full">Beskrivning<textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label><button className="primary wide">Spara maskin</button></form></section></div>}
     </>}
   </main>;
