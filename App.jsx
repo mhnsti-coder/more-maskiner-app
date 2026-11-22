@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download } from 'lucide-react';
+import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem' };
@@ -92,6 +92,14 @@ export default function App() {
   const [announcementDeleteBusy, setAnnouncementDeleteBusy] = useState(false);
   const [showAnnouncementForm, setShowAnnouncementForm] = useState(false);
   const [showInternInfo, setShowInternInfo] = useState(false);
+  const [internInfoMode, setInternInfoMode] = useState('news');
+  const [privateConversations, setPrivateConversations] = useState([]);
+  const [selectedPrivateConversation, setSelectedPrivateConversation] = useState(null);
+  const [privateMessages, setPrivateMessages] = useState([]);
+  const [privateRecipientIds, setPrivateRecipientIds] = useState([]);
+  const [privateMessageText, setPrivateMessageText] = useState('');
+  const [privateBusy, setPrivateBusy] = useState(false);
+  const [showNewPrivateMessage, setShowNewPrivateMessage] = useState(false);
   const [showReservations, setShowReservations] = useState(false);
   const [reservations, setReservations] = useState([]);
   const [reservationSearch, setReservationSearch] = useState('');
@@ -335,6 +343,114 @@ export default function App() {
       return;
     }
     setReservations(data || []);
+  }
+
+
+  async function loadPrivateConversations() {
+    if (!session?.user?.id) return;
+    setPrivateBusy(true);
+    const { data: threads, error: threadError } = await supabase
+      .from('private_conversations').select('*').order('updated_at', { ascending: false });
+    if (threadError) {
+      setError('Kunde inte hämta privata meddelanden: ' + threadError.message);
+      setPrivateBusy(false);
+      return;
+    }
+    const ids = (threads || []).map(thread => thread.id);
+    if (!ids.length) {
+      setPrivateConversations([]);
+      setSelectedPrivateConversation(null);
+      setPrivateMessages([]);
+      setPrivateBusy(false);
+      return;
+    }
+    const [{ data: participants, error: participantError }, { data: messages, error: messageError }] = await Promise.all([
+      supabase.from('private_conversation_participants').select('conversation_id,user_id').in('conversation_id', ids),
+      supabase.from('private_messages').select('*').in('conversation_id', ids).order('created_at', { ascending: true })
+    ]);
+    if (participantError || messageError) {
+      setError('Kunde inte läsa konversationerna: ' + (participantError?.message || messageError?.message));
+      setPrivateBusy(false);
+      return;
+    }
+    const grouped = (threads || []).map(thread => ({
+      ...thread,
+      participants: (participants || []).filter(item => item.conversation_id === thread.id),
+      messages: (messages || []).filter(item => item.conversation_id === thread.id)
+    })).filter(thread => isAdmin || thread.participants.some(item => item.user_id === session.user.id));
+    setPrivateConversations(grouped);
+    if (selectedPrivateConversation) {
+      const refreshed = grouped.find(item => item.id === selectedPrivateConversation.id) || null;
+      setSelectedPrivateConversation(refreshed);
+      setPrivateMessages(refreshed?.messages || []);
+    }
+    setPrivateBusy(false);
+  }
+
+  async function notifyPrivateMessage(conversationId, messageId) {
+    const { error } = await supabase.functions.invoke('send-private-message-push', {
+      body: { conversationId, messageId }
+    });
+    if (error) console.warn('Pushnotis för privat meddelande kunde inte skickas:', error.message);
+  }
+
+  async function startPrivateConversation(event) {
+    event.preventDefault();
+    const recipients = [...new Set(privateRecipientIds)].filter(id => id && id !== session?.user?.id);
+    const body = privateMessageText.trim();
+    if (!recipients.length || !body || privateBusy) return;
+    setPrivateBusy(true);
+    setError('');
+    const { data: conversation, error: createError } = await supabase
+      .from('private_conversations').insert({ created_by: session.user.id }).select().single();
+    if (createError) {
+      setError('Kunde inte starta konversationen: ' + createError.message);
+      setPrivateBusy(false);
+      return;
+    }
+    const participantRows = [session.user.id, ...recipients].map(user_id => ({ conversation_id: conversation.id, user_id }));
+    const { error: participantError } = await supabase.from('private_conversation_participants').insert(participantRows);
+    if (participantError) {
+      setError('Kunde inte lägga till mottagarna: ' + participantError.message);
+      setPrivateBusy(false);
+      return;
+    }
+    const { data: message, error: messageError } = await supabase.from('private_messages')
+      .insert({ conversation_id: conversation.id, sender_id: session.user.id, body }).select().single();
+    if (messageError) {
+      setError('Konversationen skapades men meddelandet kunde inte skickas: ' + messageError.message);
+      setPrivateBusy(false);
+      return;
+    }
+    setPrivateMessageText('');
+    setPrivateRecipientIds([]);
+    setShowNewPrivateMessage(false);
+    setSelectedPrivateConversation({ ...conversation, participants: participantRows, messages: [message] });
+    setPrivateMessages([message]);
+    await notifyPrivateMessage(conversation.id, message.id);
+    await loadPrivateConversations();
+    setPrivateBusy(false);
+  }
+
+  async function sendPrivateReply(event) {
+    event.preventDefault();
+    const body = privateMessageText.trim();
+    if (!selectedPrivateConversation?.id || !body || privateBusy) return;
+    setPrivateBusy(true);
+    setError('');
+    const { data: message, error } = await supabase.from('private_messages')
+      .insert({ conversation_id: selectedPrivateConversation.id, sender_id: session.user.id, body })
+      .select().single();
+    if (error) {
+      setError('Meddelandet kunde inte skickas: ' + error.message);
+      setPrivateBusy(false);
+      return;
+    }
+    setPrivateMessageText('');
+    setPrivateMessages(current => [...current, message]);
+    await notifyPrivateMessage(selectedPrivateConversation.id, message.id);
+    await loadPrivateConversations();
+    setPrivateBusy(false);
   }
 
   async function loadAnnouncements(showDeleted = showDeletedAnnouncements) {
@@ -1047,6 +1163,30 @@ export default function App() {
       .tab-unread-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;margin-left:2px;border-radius:10px;background:#b92f35;color:#fff;font-size:11px;font-weight:800;line-height:1}
       .main-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:11px 18px;border-radius:9px;border:1px solid #3b3b3b;background:#202020;color:#c9c9c9;font-weight:650;cursor:pointer;transition:background .15s,border-color .15s}
       .main-tabs button.active{background:#3a1719;border-color:#d92730;color:#fff}
+
+      .interninfo-switch{display:flex;gap:8px;margin:0 0 18px;flex-wrap:wrap}
+      .interninfo-switch button{display:inline-flex;align-items:center;gap:8px;background:#202020;border:1px solid #383838;color:#bbb;border-radius:8px;padding:11px 14px}
+      .interninfo-switch button.active{background:#3a1719;border-color:#d92730;color:#fff}
+      .private-message-layout{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,1.6fr);gap:16px;min-height:420px}
+      .private-conversation-list,.private-conversation-view{background:#191919;border:1px solid #353535;border-radius:12px;padding:16px;min-width:0}
+      .private-list-heading,.private-view-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+      .private-list-heading h2,.private-view-heading h2{font-size:19px;margin:4px 0 12px}
+      .private-thread{display:grid;gap:5px;width:100%;text-align:left;background:#202020;border:1px solid #393939;border-radius:8px;padding:12px;margin-top:8px;color:#eee}
+      .private-thread.active{border-color:#d92730;background:#2a1718}
+      .private-thread small{color:#aaa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .private-thread time{font-size:11px;color:#888}
+      .private-compose-form{display:grid;gap:13px;margin-top:16px}
+      .private-compose-form label{display:grid;gap:7px;color:#bbb;font-size:13px}
+      .private-compose-form select{min-height:125px;background:#111;color:#fff;border:1px solid #444;border-radius:7px;padding:8px}
+      .private-compose-form textarea{width:100%;background:#111;color:#fff;border:1px solid #444;border-radius:7px;padding:11px}
+      .private-message-list{display:grid;gap:10px;max-height:430px;overflow:auto;padding:12px 2px}
+      .private-bubble{justify-self:start;max-width:88%;background:#252525;border:1px solid #3a3a3a;border-radius:10px;padding:10px 12px}
+      .private-bubble.mine{justify-self:end;background:#351a1c;border-color:#713034}
+      .private-bubble p{white-space:pre-wrap;margin:0 0 7px;line-height:1.5}
+      .private-bubble small{color:#aaa;font-size:11px}
+      .private-reply-form{margin-top:12px}
+      @media(max-width:700px){.private-message-layout{grid-template-columns:1fr}.private-conversation-list{max-height:260px;overflow:auto}}
+
       .announcement-list{display:grid;gap:16px;margin-top:22px}
       .admin-user-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:13px 0;border-bottom:1px solid #333}
       .admin-user-main{display:flex;flex-direction:column;gap:4px;min-width:150px}
@@ -1253,9 +1393,45 @@ export default function App() {
         ? <div className="empty"><CalendarDays size={32}/><h3>Inga aktiva reservationer</h3><p>Nya reservationer visas här när de registreras.</p></div>
         : <section className="reservation-list">{reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).map(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const remaining=Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)); return <article className="reservation-card" key={r.id}><div className="reservation-card-main"><div><p className="eyebrow">KUNDRESERVATION</p><h2>{r.customer_name}</h2><p className="muted">{machine ? `${machine.brand} ${machine.model}` : 'Maskin saknas'}{machine?.machine_number ? ` · ${machine.machine_number}` : ''}</p></div><div className="reservation-quantity"><strong>{remaining} st</strong><span>kvar att leverera</span></div></div><div className="reservation-meta"><span><CalendarDays size={15}/> {date(r.reservation_date)}</span>{r.reservation_end_date && <span className="reservation-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></span>}<div className="reservation-seller"><span className="reservation-seller-label">ANSVARIG SÄLJARE</span><strong>{seller?.full_name || 'Ansvarig saknas'}</strong></div><span>Ursprungligt antal: {r.quantity || 1} st</span>{Number(r.fulfilled_quantity||0)>0 && <span>Redan sålda: {r.fulfilled_quantity} st</span>}</div>{machine && <button className="secondary-action" onClick={() => { setShowReservations(false); loadMachineDetails(machine, r.id); }}><Package size={15}/> Öppna maskin och hantera reservation</button>}</article>; })}</section>}
     </> : showInternInfo ? <>
-      <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och information från hela teamet.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>{isAdmin && <button type="button" onClick={() => { const next = !showDeletedAnnouncements; setShowDeletedAnnouncements(next); loadAnnouncements(next); }}>{showDeletedAnnouncements ? 'Visa aktiva inlägg' : 'Visa borttagna'}</button>}<button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></div></section>
+      <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och privata meddelanden inom teamet.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>{internInfoMode === 'news' ? <>{isAdmin && <button type="button" onClick={() => { const next = !showDeletedAnnouncements; setShowDeletedAnnouncements(next); loadAnnouncements(next); }}>{showDeletedAnnouncements ? 'Visa aktiva inlägg' : 'Visa borttagna'}</button>}<button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv inlägg</button></> : <button className="primary add-btn" onClick={() => { setShowNewPrivateMessage(true); setSelectedPrivateConversation(null); setPrivateMessageText(''); setPrivateRecipientIds([]); }}><Plus size={18} /> Nytt meddelande</button>}</div></section>
+      <div className="interninfo-switch"><button type="button" className={internInfoMode === 'news' ? 'active' : ''} onClick={() => { setInternInfoMode('news'); setSelectedPrivateConversation(null); setShowNewPrivateMessage(false); }}><Megaphone size={16}/> Information till alla</button><button type="button" className={internInfoMode === 'private' ? 'active' : ''} onClick={() => { setInternInfoMode('private'); setShowAnnouncementForm(false); loadPrivateConversations(); }}><Mail size={16}/> Privata meddelanden</button></div>
+      {internInfoMode === 'news' ? <>
       {showAnnouncementForm && <section className="dialog announcement-compose"><h2>Nytt inlägg</h2><form className="machine-form" onSubmit={publishAnnouncement}><label className="full">Rubrik<input value={announcementText.title} onChange={e => setAnnouncementText(v => ({ ...v, title: e.target.value }))} required maxLength={140} placeholder="Vad gäller informationen?" /></label><label className="full">Kategori<select value={announcementText.category} onChange={e => setAnnouncementText(v => ({ ...v, category: e.target.value }))}><option>Information</option><option>Nyhet</option><option>Driftinformation</option><option>Viktigt</option></select></label><label className="full">Meddelande<textarea rows={5} value={announcementText.body} onChange={e => setAnnouncementText(v => ({ ...v, body: e.target.value }))} required placeholder="Skriv informationen här…" /></label><label className="full checkbox-line"><input type="checkbox" checked={announcementText.is_important} onChange={e => setAnnouncementText(v => ({ ...v, is_important: e.target.checked }))} /> Markera som viktig information</label><div className="full announcement-file-picker"><label className="button" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: announcementBusy ? 'wait' : 'pointer' }}><Paperclip size={16} /> Lägg till bilagor<input type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" onChange={e => { const picked = Array.from(e.target.files || []); setAnnouncementFiles(current => [...current, ...picked].slice(0, 5)); e.target.value = ''; }} disabled={announcementBusy} style={{ display: 'none' }} /></label><small className="muted">Max 5 filer, 15 MB per fil. Bilder, PDF och Office-dokument.</small>{announcementFiles.length > 0 && <div className="announcement-file-list">{announcementFiles.map((file, index) => <span key={`${file.name}-${file.size}-${index}`}><FileText size={14} /> {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB) <button type="button" onClick={() => setAnnouncementFiles(current => current.filter((_, i) => i !== index))} disabled={announcementBusy} aria-label={`Ta bort ${file.name}`}><X size={14} /></button></span>)}</div>}</div><button className="primary wide" disabled={announcementBusy}>{announcementBusy ? 'Publicerar…' : 'Publicera'}</button><button type="button" className="wide" onClick={() => setShowAnnouncementForm(false)}>Avbryt</button></form></section>}
       {announcements.length === 0 ? <div className="empty"><Megaphone size={32} /><h3>{showDeletedAnnouncements ? 'Inga borttagna inlägg' : 'Ingen intern information ännu'}</h3><p>{showDeletedAnnouncements ? 'Det finns inga borttagna inlägg att återställa.' : 'Här visas nyheter och meddelanden från medarbetarna.'}</p></div> : <section className="announcement-list">{announcements.map(item => <article className="dialog announcement-card" key={item.id}><div className="announcement-meta"><span>{item.category || 'Information'}{item.deleted_at ? ' · BORTTAGET' : ''}</span><small>{dateTime(item.created_at)}</small></div><div className="announcement-author"><span>Publicerat av</span><strong>{profiles.find(profile => profile.id === item.created_by)?.full_name || 'Medarbetare'}</strong></div>{item.is_important && <p className="important-label"><AlertCircle size={15} /> Viktig information</p>}<h2>{item.title}</h2><p className="announcement-body">{item.body}</p>{isAdmin && <div className="dialog-actions" style={{marginTop:12}}>{item.deleted_at ? <button type="button" className="primary" onClick={() => setAnnouncementDeleted(item, false)} disabled={announcementDeleteBusy}><RefreshCw size={15} /> Återställ inlägg</button> : <button type="button" onClick={() => setAnnouncementDeleted(item, true)} disabled={announcementDeleteBusy} style={{color:'#f08080'}}><Trash2 size={15} /> Ta bort inlägg</button>}</div>}{(announcementAttachments[item.id] || []).length > 0 && <div className="announcement-attachments"><strong><Paperclip size={15} style={{ verticalAlign: 'middle' }} /> Bilagor</strong>{announcementAttachments[item.id].map(file => <a className="announcement-attachment" key={file.id} href={file.signedUrl || undefined} target="_blank" rel="noreferrer" onClick={e => { if (!file.signedUrl) { e.preventDefault(); setError('Bilagan kunde inte öppnas. Uppdatera Interninfo och försök igen.'); } }}><FileText size={17} /><span>{file.file_name}</span><small>{(file.file_size / 1024 / 1024).toFixed(1)} MB</small><Download size={15} /></a>)}</div>}<div className="detail-section">{(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).length > 0 && <h3><MessageSquare size={17} /> Kommentarer ({(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).length})</h3>}{(announcementComments[item.id] || []).filter(comment => showDeletedAnnouncements ? Boolean(comment.deleted_at) : !comment.deleted_at).map(comment => <div className="comment-item" key={comment.id} style={comment.deleted_at ? {opacity:0.65,borderLeft:'3px solid #a33',paddingLeft:10} : undefined}><p>{comment.message}</p><div className="comment-footer"><small>{profiles.find(profile => profile.id === comment.user_id)?.full_name || 'Medarbetare'} · {dateTime(comment.created_at)}{comment.deleted_at ? ' · BORTTAGEN' : ''}</small>{isAdmin && <button className="comment-delete-button" type="button" onClick={() => setAnnouncementCommentDeleted(comment, !comment.deleted_at)} disabled={announcementDeleteBusy}>{comment.deleted_at ? <><RefreshCw size={14}/> Återställ</> : <><Trash2 size={14}/> Ta bort</>}</button>}</div></div>)}{!showDeletedAnnouncements && !item.deleted_at && <form className="comment-form" onSubmit={event => addAnnouncementComment(event, item.id)}><textarea rows={2} placeholder="Skriv en kommentar eller fråga…" value={announcementCommentText[item.id] || ''} onChange={e => setAnnouncementCommentText(v => ({ ...v, [item.id]: e.target.value }))} required /><button className="primary" disabled={!(announcementCommentText[item.id] || '').trim()}><Send size={16} /> Skicka</button></form>}</div></article>)}</section>}
+
+      </> : <section className="private-message-layout">
+        <aside className="private-conversation-list">
+          <div className="private-list-heading"><h2><Mail size={18}/> Inkorg</h2><button type="button" className="admin-refresh-button" onClick={loadPrivateConversations} disabled={privateBusy}><RefreshCw size={14}/> Uppdatera</button></div>
+          {privateBusy && privateConversations.length === 0 ? <p className="muted">Hämtar meddelanden…</p> : privateConversations.length === 0 ? <p className="muted">Inga privata meddelanden ännu.</p> : privateConversations.map(thread => {
+            const otherIds = thread.participants.filter(p => p.user_id !== session.user.id).map(p => p.user_id);
+            const names = otherIds.map(id => profiles.find(p => p.id === id)?.full_name || 'Medarbetare').join(', ');
+            const last = thread.messages[thread.messages.length - 1];
+            return <button type="button" key={thread.id} className={`private-thread ${selectedPrivateConversation?.id === thread.id ? 'active' : ''}`} onClick={() => { setSelectedPrivateConversation(thread); setPrivateMessages(thread.messages || []); setShowNewPrivateMessage(false); setPrivateMessageText(''); }}>
+              <strong>{names || 'Privat konversation'}</strong><small>{last?.body || 'Inget meddelande ännu'}</small><time>{last ? dateTime(last.created_at) : dateTime(thread.created_at)}</time>
+            </button>;
+          })}
+        </aside>
+        <div className="private-conversation-view">
+          {showNewPrivateMessage ? <>
+            <h2><MessageCircle size={19}/> Nytt privat meddelande</h2>
+            <form onSubmit={startPrivateConversation} className="private-compose-form">
+              <label>Mottagare – välj en eller flera
+                <select multiple value={privateRecipientIds} onChange={e => setPrivateRecipientIds(Array.from(e.target.selectedOptions, option => option.value))} required>
+                  {profiles.filter(p => p.id !== session?.user?.id && p.is_active !== false).map(p => <option key={p.id} value={p.id}>{p.full_name || 'Medarbetare'}{p.role === 'admin' ? ' · Admin' : ''}</option>)}
+                </select>
+              </label>
+              <small className="muted">På mobil: håll inne för att välja flera mottagare.</small>
+              <label>Meddelande<textarea rows={5} value={privateMessageText} onChange={e => setPrivateMessageText(e.target.value)} maxLength={5000} required placeholder="Skriv ditt privata meddelande…"/></label>
+              <button className="primary" disabled={privateBusy || !privateRecipientIds.length || !privateMessageText.trim()}><Send size={16}/> {privateBusy ? 'Skickar…' : 'Skicka meddelande'}</button>
+              <button type="button" onClick={() => setShowNewPrivateMessage(false)}>Avbryt</button>
+            </form>
+          </> : selectedPrivateConversation ? <>
+            <div className="private-view-heading"><div><p className="eyebrow">PRIVAT KONVERSATION</p><h2>{selectedPrivateConversation.participants.filter(p => p.user_id !== session.user.id).map(p => profiles.find(profile => profile.id === p.user_id)?.full_name || 'Medarbetare').join(', ') || 'Konversation'}</h2></div><button type="button" onClick={() => setSelectedPrivateConversation(null)}>Stäng</button></div>
+            <div className="private-message-list">{privateMessages.map(message => <div className={`private-bubble ${message.sender_id === session.user.id ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{profiles.find(p => p.id === message.sender_id)?.full_name || 'Medarbetare'} · {dateTime(message.created_at)}</small></div>)}</div>
+            {selectedPrivateConversation.participants.some(p => p.user_id === session.user.id) ? <form className="comment-form private-reply-form" onSubmit={sendPrivateReply}><textarea rows={2} value={privateMessageText} onChange={e => setPrivateMessageText(e.target.value)} maxLength={5000} placeholder="Skriv ett svar…" required/><button className="primary" disabled={privateBusy || !privateMessageText.trim()}><Send size={16}/> Skicka</button></form> : <p className="muted">Administratörsvy – endast deltagarna kan svara i konversationen.</p>}
+          </> : <div className="empty"><Mail size={32}/><h3>Välj en konversation</h3><p>Öppna ett meddelande i inkorgen eller starta ett nytt.</p></div>}
+        </div>
+      </section>}
     </> : showAdmin && isAdmin ? <>    {showAdmin && isAdmin && <section className="admin-page page-panel"><div className="page-panel-heading"><div><p className="eyebrow">SYSTEMINSTÄLLNINGAR</p><h1><Users size={24} /> Administration</h1><p className="muted">Hantera personal, behörigheter och konton.</p></div></div><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p><div className="admin-users-heading"><span className="muted">{adminUsers.filter(user => user.is_active !== false).length} aktiva medarbetare</span>{adminUsers.some(user => user.is_active === false) && <button type="button" className="admin-refresh-button" onClick={() => setShowInactiveUsers(value => !value)}>{showInactiveUsers ? 'Dölj avaktiverade' : `Visa avaktiverade (${adminUsers.filter(user => user.is_active === false).length})`}</button>}</div>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.filter(user => showInactiveUsers || user.is_active !== false).map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}<div className="detail-section auth-activity-section"><button type="button" className="admin-refresh-button" onClick={() => { const next = !showAuthActivity; setShowAuthActivity(next); if (next) loadAuthActivity(); }}><History size={15} /> {showAuthActivity ? 'Dölj inloggningshistorik' : 'Visa inloggningshistorik'}</button>{showAuthActivity && <div className="auth-activity-list">{authActivityLoading ? <p className="muted">Hämtar historik…</p> : authActivity.length === 0 ? <p className="muted">Ingen inloggningshistorik ännu.</p> : authActivity.map(item => <div className="auth-activity-row" key={item.id}><span className={item.event_type === 'login' ? 'auth-activity-icon login' : 'auth-activity-icon logout'}>{item.event_type === 'login' ? <LogIn size={16} /> : <LogOut size={16} />}</span><div><strong>{item.profiles?.full_name || 'Okänd användare'}</strong><small>{item.event_type === 'login' ? 'Loggade in' : 'Loggade ut'} · {dateTime(item.created_at)}</small></div></div>)}</div>}</div></div></section>}</> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => setShowAdd(true)}><Plus size={18} /> Lägg till maskin</button></section>
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
