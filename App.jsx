@@ -100,6 +100,7 @@ export default function App() {
   const [editingHomeNotice, setEditingHomeNotice] = useState(null);
   const [homeNoticeForm, setHomeNoticeForm] = useState({ title: '', body: '', is_important: false, expires_at: '' });
   const [homeNoticeBusy, setHomeNoticeBusy] = useState(false);
+  const [homeOverviewExpanded, setHomeOverviewExpanded] = useState(false);
   const [showAnnouncementForm, setShowAnnouncementForm] = useState(false);
   const [showInternInfo, setShowInternInfo] = useState(false);
   const [internInfoMode, setInternInfoMode] = useState('news');
@@ -1220,6 +1221,9 @@ export default function App() {
       }
       .home-quick-overview{margin:14px 0 22px;padding:0;border-bottom:1px solid #303030}.home-quick-overview.compact-after{margin-bottom:4px}
       .home-quick-heading{margin:0 0 5px;color:#aaa;font-size:10px;font-weight:800;letter-spacing:.14em}
+      .home-quick-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;background:transparent;border:0;padding:7px 0;cursor:pointer;text-align:left}
+      .home-quick-toggle svg{transition:transform .18s ease;color:#aaa}.home-quick-toggle svg.expanded{transform:rotate(180deg)}
+      .home-quick-content{animation:homeQuickOpen .16s ease-out}@keyframes homeQuickOpen{from{opacity:.5;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
       .home-quick-row{display:flex;align-items:center;gap:11px;width:100%;min-width:0;padding:11px 2px;background:transparent;border:0;border-top:1px solid #292929;border-radius:0;color:#f3f3f3;text-align:left;cursor:pointer}
       .home-quick-row:last-child{border-bottom:0}
       .home-quick-icon{display:flex;align-items:center;justify-content:center;flex:0 0 25px;color:#e43b45}
@@ -1462,7 +1466,8 @@ export default function App() {
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {!showReservations && !showInternInfo && !showAdmin && <>
     <section className={`home-quick-overview ${homeNotices.length === 0 && !isAdmin ? 'compact-after' : ''}`} aria-label="Min översikt">
-      <p className="home-quick-heading">MIN ÖVERSIKT</p>
+      <button type="button" className="home-quick-heading home-quick-toggle" aria-expanded={homeOverviewExpanded} onClick={() => setHomeOverviewExpanded(v => !v)}><span>MIN ÖVERSIKT</span><ChevronDown size={16} className={homeOverviewExpanded ? 'expanded' : ''} /></button>
+      {homeOverviewExpanded && <div className="home-quick-content">
       <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}>
         <span className="home-quick-icon"><CalendarDays size={18} /></span>
         <span className="home-quick-copy">
@@ -1479,6 +1484,7 @@ export default function App() {
         </span>
         <span className="home-quick-action">Läs <span aria-hidden="true">›</span></span>
       </button>}
+      </div>}
     </section>
     {homeNotices.length > 0 || isAdmin ? <section className="home-notices" aria-label="Viktig information">
       <div className="home-notices-head"><h2><Megaphone size={19}/> VIKTIG INFORMATION</h2>{isAdmin && <button type="button" className="secondary-action" onClick={() => startHomeNoticeEdit()}><Plus size={15}/> Lägg till</button>}</div>
