@@ -1177,7 +1177,14 @@ export default function App() {
       .private-thread time{font-size:11px;color:#888}
       .private-compose-form{display:grid;gap:13px;margin-top:16px}
       .private-compose-form label{display:grid;gap:7px;color:#bbb;font-size:13px}
-      .private-compose-form select{min-height:125px;background:#111;color:#fff;border:1px solid #444;border-radius:7px;padding:8px}
+      .private-recipient-picker{position:relative}
+      .private-recipient-picker summary{list-style:none;cursor:pointer;min-height:48px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#111;color:#fff;border:1px solid #444;border-radius:7px;padding:11px}
+      .private-recipient-picker summary::-webkit-details-marker{display:none}
+      .private-recipient-picker[open] summary{border-color:#df202b;border-radius:7px 7px 0 0}
+      .private-recipient-options{display:grid;gap:0;background:#171717;border:1px solid #444;border-top:0;border-radius:0 0 7px 7px;max-height:220px;overflow:auto}
+      .private-recipient-options label{display:flex!important;align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid #303030;color:#fff!important;font-size:14px!important}
+      .private-recipient-options label:last-child{border-bottom:0}
+      .private-recipient-options input{width:18px;height:18px;accent-color:#df202b}
       .private-compose-form textarea{width:100%;background:#111;color:#fff;border:1px solid #444;border-radius:7px;padding:11px}
       .private-message-list{display:grid;gap:10px;max-height:430px;overflow:auto;padding:12px 2px}
       .private-bubble{justify-self:start;max-width:88%;background:#252525;border:1px solid #3a3a3a;border-radius:10px;padding:10px 12px}
@@ -1416,11 +1423,13 @@ export default function App() {
             <h2><MessageCircle size={19}/> Nytt privat meddelande</h2>
             <form onSubmit={startPrivateConversation} className="private-compose-form">
               <label>Mottagare – välj en eller flera
-                <select multiple value={privateRecipientIds} onChange={e => setPrivateRecipientIds(Array.from(e.target.selectedOptions, option => option.value))} required>
-                  {profiles.filter(p => p.id !== session?.user?.id && p.is_active !== false).map(p => <option key={p.id} value={p.id}>{p.full_name || 'Medarbetare'}{p.role === 'admin' ? ' · Admin' : ''}</option>)}
-                </select>
+                <details className="private-recipient-picker">
+                  <summary><span>{privateRecipientIds.length ? profiles.filter(p => privateRecipientIds.includes(p.id)).map(p => p.full_name || 'Medarbetare').join(', ') : 'Välj mottagare'}</span><ChevronDown size={17}/></summary>
+                  <div className="private-recipient-options">
+                    {profiles.filter(p => p.id !== session?.user?.id && p.is_active !== false).map(p => <label key={p.id}><input type="checkbox" checked={privateRecipientIds.includes(p.id)} onChange={e => setPrivateRecipientIds(current => e.target.checked ? [...current, p.id] : current.filter(id => id !== p.id))}/><span>{p.full_name || 'Medarbetare'}{p.role === 'admin' ? ' · Admin' : ''}</span></label>)}
+                  </div>
+                </details>
               </label>
-              <small className="muted">På mobil: håll inne för att välja flera mottagare.</small>
               <label>Meddelande<textarea rows={5} value={privateMessageText} onChange={e => setPrivateMessageText(e.target.value)} maxLength={5000} required placeholder="Skriv ditt privata meddelande…"/></label>
               <button className="primary" disabled={privateBusy || !privateRecipientIds.length || !privateMessageText.trim()}><Send size={16}/> {privateBusy ? 'Skickar…' : 'Skicka meddelande'}</button>
               <button type="button" onClick={() => setShowNewPrivateMessage(false)}>Avbryt</button>
