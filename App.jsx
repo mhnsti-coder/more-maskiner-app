@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle } from 'lucide-react';
+import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem' };
