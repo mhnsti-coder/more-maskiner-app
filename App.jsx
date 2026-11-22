@@ -277,7 +277,7 @@ export default function App() {
     return () => { alive = false; listener.subscription.unsubscribe(); };
   }, []);
 
-  // Visar vilka användare som för närvarande har appen ansluten.
+  // Visar online-användare med två minuters respit vid korta avbrott/bakgrundsläge.
   useEffect(() => {
     const userId = session?.user?.id;
     if (!userId) {
@@ -287,12 +287,29 @@ export default function App() {
     }
 
     let active = true;
+    const gracePeriodMs = 2 * 60 * 1000;
+    const lastSeenByUser = new Map();
     const channel = supabase.channel('more-online-presence');
     const updateOnlineUsers = () => {
       if (!active) return;
+      const now = Date.now();
       const state = channel.presenceState();
-      const ids = [...new Set(Object.values(state).flat().map(entry => entry?.user_id).filter(Boolean))];
-      setOnlineUserIds(ids);
+      const connectedIds = new Set(
+        Object.values(state).flat().map(entry => entry?.user_id).filter(Boolean)
+      );
+
+      // Aktiva användare får en färsk tidsstämpel. Saknade användare ligger kvar
+      // i listan i två minuter så iOS hinner pausa/återuppta anslutningen.
+      connectedIds.forEach(id => lastSeenByUser.set(id, now));
+      const visibleIds = [];
+      for (const [id, lastSeen] of lastSeenByUser.entries()) {
+        if (connectedIds.has(id) || now - lastSeen < gracePeriodMs) {
+          visibleIds.push(id);
+        } else {
+          lastSeenByUser.delete(id);
+        }
+      }
+      setOnlineUserIds(visibleIds);
     };
 
     channel
@@ -307,8 +324,17 @@ export default function App() {
         }
       });
 
+    // Pollning håller tidsstämplarna aktuella även när Presence inte skickar events.
+    const refreshTimer = window.setInterval(updateOnlineUsers, 15000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') updateOnlineUsers();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       active = false;
+      window.clearInterval(refreshTimer);
+      document.removeEventListener('visibilitychange', handleVisibility);
       supabase.removeChannel(channel);
     };
   }, [session?.user?.id]);
