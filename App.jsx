@@ -191,10 +191,34 @@ export default function App() {
     if (!homeNoticeForm.title.trim() || !homeNoticeForm.body.trim()) return;
     setHomeNoticeBusy(true);
     const payload = { title: homeNoticeForm.title.trim(), body: homeNoticeForm.body.trim(), is_important: homeNoticeForm.is_important, expires_at: homeNoticeForm.expires_at ? new Date(homeNoticeForm.expires_at).toISOString() : null, updated_at: new Date().toISOString() };
-    const query = editingHomeNotice ? supabase.from('home_important_notices').update(payload).eq('id', editingHomeNotice.id) : supabase.from('home_important_notices').insert({ ...payload, created_by: session.user.id });
-    const { error } = await query;
-    if (error) setError('Kunde inte spara viktig information: ' + error.message);
-    else { setShowHomeNoticeForm(false); setEditingHomeNotice(null); await loadHomeNotices(); }
+    let savedNotice = null;
+    const saveResult = editingHomeNotice
+      ? await supabase.from('home_important_notices').update(payload).eq('id', editingHomeNotice.id)
+      : await supabase.from('home_important_notices').insert({ ...payload, created_by: session.user.id }).select('id, title, body, is_important').single();
+    if (saveResult.error) setError('Kunde inte spara viktig information: ' + saveResult.error.message);
+    else {
+      savedNotice = saveResult.data;
+      setShowHomeNoticeForm(false);
+      setEditingHomeNotice(null);
+      await loadHomeNotices();
+      // Push skickas bara när ett nytt viktigt meddelande publiceras, inte vid redigering.
+      if (!editingHomeNotice && savedNotice?.is_important) {
+        setPushMessage('Viktigt meddelande publicerat. Skickar pushnotiser…');
+        try {
+          const { data: pushResult, error: pushError } = await supabase.functions.invoke('send-home-notice-push', { body: { noticeId: savedNotice.id } });
+          if (pushError || pushResult?.error) {
+            const details = pushResult?.error || pushError?.message || 'Okänt fel från pushfunktionen.';
+            console.error('[MÖRE push] Home notice push failed', pushError || pushResult);
+            setPushMessage('Meddelandet publicerades, men pushutskicket misslyckades: ' + details);
+          } else {
+            setPushMessage(`Viktigt meddelande publicerat. ${pushResult?.sent || 0} pushnotis(er) skickades.`);
+          }
+        } catch (pushException) {
+          console.error('[MÖRE push] Home notice push exception', pushException);
+          setPushMessage('Meddelandet publicerades, men pushanropet kunde inte genomföras: ' + (pushException?.message || 'Okänt nätverksfel.'));
+        }
+      }
+    }
     setHomeNoticeBusy(false);
   }
 
