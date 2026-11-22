@@ -1218,7 +1218,7 @@ export default function App() {
         .app-shell .stats{grid-template-columns:repeat(2,minmax(0,1fr));}
         .app-shell .machine-grid{grid-template-columns:minmax(0,1fr);}
       }
-      .home-quick-overview{margin:14px 0 22px;padding:0;border-bottom:1px solid #303030}
+      .home-quick-overview{margin:14px 0 22px;padding:0;border-bottom:1px solid #303030}.home-quick-overview.compact-after{margin-bottom:4px}
       .home-quick-heading{margin:0 0 5px;color:#aaa;font-size:10px;font-weight:800;letter-spacing:.14em}
       .home-quick-row{display:flex;align-items:center;gap:11px;width:100%;min-width:0;padding:11px 2px;background:transparent;border:0;border-top:1px solid #292929;border-radius:0;color:#f3f3f3;text-align:left;cursor:pointer}
       .home-quick-row:last-child{border-bottom:0}
@@ -1461,7 +1461,7 @@ export default function App() {
     <nav className="main-tabs"><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showReservations ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}><CalendarDays size={16} /> Reservationer</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {!showReservations && !showInternInfo && !showAdmin && <>
-    <section className="home-quick-overview" aria-label="Min översikt">
+    <section className={`home-quick-overview ${homeNotices.length === 0 && !isAdmin ? 'compact-after' : ''}`} aria-label="Min översikt">
       <p className="home-quick-heading">MIN ÖVERSIKT</p>
       <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}>
         <span className="home-quick-icon"><CalendarDays size={18} /></span>
