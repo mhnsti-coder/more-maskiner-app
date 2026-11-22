@@ -31,6 +31,7 @@ function urlBase64ToUint8Array(base64String) {
 
 export default function App() {
   const [session, setSession] = useState(null);
+  const [sellerPreviewMode, setSellerPreviewMode] = useState(false);
   const [machines, setMachines] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
@@ -125,7 +126,10 @@ export default function App() {
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMessage, setPushMessage] = useState('');
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
-  const isAdmin = currentProfile?.role === 'admin';
+  const isSuperAdminAccount = session?.user?.email?.trim().toLowerCase() === 'mhnsti@gmail.com';
+  const hasAdminRole = currentProfile?.role === 'admin';
+  // Endast över-admin kan växla till säljarens gränssnitt. Behörigheten i databasen ändras inte.
+  const isAdmin = hasAdminRole && !(isSuperAdminAccount && sellerPreviewMode);
   const unreadAnnouncementCount = announcements.filter(
     item => !item.deleted_at && !readAnnouncementIds.includes(item.id)
   ).length;
@@ -1524,7 +1528,7 @@ export default function App() {
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
 
     `}</style>
-    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className={`main-tabs ${isAdmin ? 'admin-tabs' : 'seller-tabs'}`}><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {!showReservations && !showInternInfo && !showAdmin && <>
