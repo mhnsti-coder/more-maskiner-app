@@ -18,7 +18,8 @@ const displayMachineStatus = machine => {
   if (Number(machine.sold_quantity || 0) > 0) return 'sold';
   return machine.status;
 };
-const emptyForm = { machine_number: '', brand: '', model: '', year: '', hours: '', price: '', stock_quantity: '1', incoming_quantity: '0', description: '' };
+const emptyForm = { machine_number: '', brand: '', model: '', year: '', hours: '', price: '', stock_quantity: '1', description: '' };
+const emptyDelivery = () => ({ quantity: '1', eta_year: String(new Date().getFullYear()), eta_week: String(Math.min(53, Math.ceil((((new Date() - new Date(new Date().getFullYear(),0,1)) / 86400000) + new Date(new Date().getFullYear(),0,1).getDay() + 1) / 7))), });
 const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY;
 
 function urlBase64ToUint8Array(base64String) {
@@ -67,6 +68,10 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [stockEdit, setStockEdit] = useState('1');
   const [incomingEdit, setIncomingEdit] = useState('0');
+  const [incomingDeliveries, setIncomingDeliveries] = useState([]);
+  const [newDelivery, setNewDelivery] = useState(emptyDelivery());
+  const [addDeliveries, setAddDeliveries] = useState([]);
+  const [receiveDeliveryAmounts, setReceiveDeliveryAmounts] = useState({});
   const [receiveQuantity, setReceiveQuantity] = useState('1');
   const [customerName, setCustomerName] = useState('');
   const [reservedBy, setReservedBy] = useState('');
@@ -368,10 +373,15 @@ export default function App() {
       setError(error.message);
     } else {
       const rows = data || [];
+      const { data: deliveryRows, error: deliveryError } = await supabase.from('machine_incoming_deliveries').select('machine_id, quantity');
+      if (deliveryError) { setError('Maskinerna kunde hämtas, men inkommande leveranser kunde inte hämtas: ' + deliveryError.message); setLoading(false); return; }
+      const incomingByMachine = {};
+      (deliveryRows || []).forEach(d => { incomingByMachine[d.machine_id] = (incomingByMachine[d.machine_id] || 0) + Number(d.quantity || 0); });
+      const rowsWithIncoming = rows.map(m => ({ ...m, incoming_quantity: incomingByMachine[m.id] || 0 }));
       const { data: reservationRows, error: reservationRowsError } = await supabase.from('reservations').select('machine_id, quantity, fulfilled_quantity').eq('status', 'active');
       const reservedByMachine = {};
       (reservationRows || []).forEach(r => { reservedByMachine[r.machine_id] = (reservedByMachine[r.machine_id] || 0) + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); });
-      const rowsWithReservations = rows.map(m => ({ ...m, reserved_quantity: reservedByMachine[m.id] || 0, available_quantity: Math.max(0, Number(m.stock_quantity ?? 1) - (reservedByMachine[m.id] || 0)) }));
+      const rowsWithReservations = rowsWithIncoming.map(m => ({ ...m, reserved_quantity: reservedByMachine[m.id] || 0, available_quantity: Math.max(0, Number(m.stock_quantity ?? 1) - (reservedByMachine[m.id] || 0)) }));
       const { data: photoRows, error: photoError } = await supabase
         .from('machine_photos')
         .select('id, machine_id, storage_path, is_primary')
@@ -773,9 +783,13 @@ export default function App() {
   async function addMachine(event) {
     event.preventDefault(); setError('');
     const { data: { user } } = await supabase.auth.getUser();
-    const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), incoming_quantity: Math.max(0, Number.parseInt(form.incoming_quantity, 10) || 0), status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 ? 'in_stock' : (Number.parseInt(form.incoming_quantity, 10) || 0) > 0 ? 'incoming' : 'sold', created_by: user.id };
-    const { error } = await supabase.from('machines').insert(payload);
-    if (error) setError(error.message); else { setShowAdd(false); setForm(emptyForm); await loadMachines(); }
+    const incomingTotal = addDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+    const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), incoming_quantity: incomingTotal, status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 ? 'in_stock' : incomingTotal > 0 ? 'incoming' : 'sold', created_by: user.id };
+    const { data: created, error } = await supabase.from('machines').insert(payload).select('id').single();
+    if (error) setError(error.message); else {
+      if (addDeliveries.length) { const { error: deliveryError } = await supabase.from('machine_incoming_deliveries').insert(addDeliveries.map(d => ({ ...d, machine_id: created.id, created_by: user.id }))); if (deliveryError) { setError('Maskinen sparades, men leveranserna kunde inte sparas: ' + deliveryError.message); return; } }
+      setShowAdd(false); setForm(emptyForm); setAddDeliveries([]); await loadMachines();
+    }
   }
 
   function openEditMachine() {
@@ -824,12 +838,13 @@ export default function App() {
     machine = { ...machine, ...freshMachine };
     setSelected(machine);
     setShowMachineHistory(false);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
-    const [c, h, r, p] = await Promise.all([
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
+    const [c, h, r, p, d] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').order('created_at', { ascending: false }),
-      supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true })
+      supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true }),
+      supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', machine.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false })
     ]);
     if (c.error) setError(c.error.message); else setComments(c.data || []);
     if (h.error) setError(h.error.message); else setHistory(h.data || []);
@@ -839,6 +854,7 @@ export default function App() {
       ...photo,
       publicUrl: supabase.storage.from('machine-photos').getPublicUrl(photo.storage_path).data.publicUrl
     })));
+    if (d.error) setError('Kunde inte hämta leveranser: ' + d.error.message); else { setIncomingDeliveries(d.data || []); setReceiveDeliveryAmounts(Object.fromEntries((d.data || []).map(item => [item.id, String(item.quantity)]))); }
   }
 
   async function uploadMachinePhotos(event) {
@@ -1065,31 +1081,55 @@ export default function App() {
     await Promise.all([loadMachines(), loadReservations()]);
   }
 
-  async function saveIncomingQuantity() {
+  async function refreshIncomingDeliveries() {
     if (!selected) return;
-    const nextIncoming = Number.parseInt(incomingEdit, 10);
-    if (!Number.isInteger(nextIncoming) || nextIncoming < 0) { setError('Ange ett giltigt antal på väg hem, 0 eller högre.'); return; }
-    const { error } = await supabase.from('machines').update({ incoming_quantity: nextIncoming }).eq('id', selected.id);
-    if (error) { setError('Antalet på väg hem kunde inte uppdateras: ' + error.message); return; }
-    const updated = { ...selected, incoming_quantity: nextIncoming };
-    setSelected(updated);
-    await Promise.all([loadMachines(), loadReservations()]);
+    const { data, error } = await supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', selected.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false });
+    if (error) { setError('Kunde inte uppdatera leveranserna: ' + error.message); return; }
+    const rows = data || []; setIncomingDeliveries(rows); setReceiveDeliveryAmounts(Object.fromEntries(rows.map(d => [d.id, String(d.quantity)])));
+    const total = rows.reduce((sum, d) => sum + Number(d.quantity || 0), 0);
+    await supabase.from('machines').update({ incoming_quantity: total }).eq('id', selected.id);
+    setSelected(current => current?.id === selected.id ? { ...current, incoming_quantity: total } : current);
+    await loadMachines();
   }
 
-  async function receiveIncomingQuantity() {
+  async function addIncomingDelivery() {
     if (!selected) return;
-    const amount = Number.parseInt(receiveQuantity, 10);
-    const incoming = Math.max(0, Number(selected.incoming_quantity || 0));
-    if (!Number.isInteger(amount) || amount < 1) { setError('Ange hur många exemplar som har kommit hem.'); return; }
-    if (amount > incoming) { setError(`Det finns bara ${incoming} st registrerade på väg hem.`); return; }
-    const nextIncoming = incoming - amount;
+    const quantity = Number.parseInt(newDelivery.quantity, 10), year = Number.parseInt(newDelivery.eta_year, 10), week = Number.parseInt(newDelivery.eta_week, 10);
+    if (!Number.isInteger(quantity) || quantity < 1 || !Number.isInteger(year) || year < 2020 || year > 2100 || !Number.isInteger(week) || week < 1 || week > 53) { setError('Ange antal samt ett giltigt ETA-år och en ETA-vecka (1–53).'); return; }
+    const { error } = await supabase.from('machine_incoming_deliveries').insert({ machine_id: selected.id, quantity, eta_year: year, eta_week: week, created_by: session.user.id });
+    if (error) { setError('Leveransen kunde inte läggas till: ' + error.message); return; }
+    setNewDelivery(emptyDelivery()); setError(''); await refreshIncomingDeliveries();
+  }
+
+  async function saveIncomingDeliveryEta(delivery) {
+    const year = Number.parseInt(delivery.eta_year, 10), week = Number.parseInt(delivery.eta_week, 10);
+    if (!Number.isInteger(year) || year < 2020 || year > 2100 || !Number.isInteger(week) || week < 1 || week > 53) { setError('Ange ett giltigt ETA-år och en ETA-vecka (1–53).'); return; }
+    const { error } = await supabase.from('machine_incoming_deliveries').update({ eta_year: year, eta_week: week }).eq('id', delivery.id);
+    if (error) { setError('ETA kunde inte sparas: ' + error.message); return; }
+    setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: year, eta_week: week } : item)); setError('');
+  }
+
+  async function removeIncomingDelivery(delivery) {
+    if (!window.confirm(`Ta bort leveransen på ${delivery.quantity} st?`)) return;
+    const { error } = await supabase.from('machine_incoming_deliveries').delete().eq('id', delivery.id);
+    if (error) { setError('Leveransen kunde inte tas bort: ' + error.message); return; }
+    await refreshIncomingDeliveries();
+  }
+
+  async function receiveIncomingDelivery(delivery) {
+    if (!selected) return;
+    const amount = Number.parseInt(receiveDeliveryAmounts[delivery.id] || String(delivery.quantity), 10);
+    if (!Number.isInteger(amount) || amount < 1 || amount > Number(delivery.quantity)) { setError(`Ange ett antal mellan 1 och ${delivery.quantity}.`); return; }
+    const remaining = Number(delivery.quantity) - amount;
+    const deliveryResult = remaining > 0
+      ? await supabase.from('machine_incoming_deliveries').update({ quantity: remaining }).eq('id', delivery.id)
+      : await supabase.from('machine_incoming_deliveries').delete().eq('id', delivery.id);
+    if (deliveryResult.error) { setError('Leveransen kunde inte registreras som mottagen: ' + deliveryResult.error.message); return; }
     const nextStock = Math.max(0, Number(selected.stock_quantity ?? 0)) + amount;
-    const nextStatus = selected.status === 'reserved' ? 'reserved' : 'in_stock';
-    const { error } = await supabase.from('machines').update({ incoming_quantity: nextIncoming, stock_quantity: nextStock, status: nextStatus }).eq('id', selected.id);
-    if (error) { setError('Leveransen kunde inte registreras: ' + error.message); return; }
-    const updated = { ...selected, incoming_quantity: nextIncoming, stock_quantity: nextStock, status: nextStatus };
-    setSelected(updated); setStockEdit(String(nextStock)); setIncomingEdit(String(nextIncoming)); setReceiveQuantity('1');
-    await Promise.all([loadMachines(), loadReservations()]);
+    const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: 'in_stock' }).eq('id', selected.id);
+    if (error) { setError('Leveransen markerades, men lagersaldot kunde inte uppdateras: ' + error.message); return; }
+    setSelected(current => current?.id === selected.id ? { ...current, stock_quantity: nextStock } : current);
+    setStockEdit(String(nextStock)); setError(''); await refreshIncomingDeliveries(); await loadMachineDetails({ ...selected, stock_quantity: nextStock });
   }
 
   async function markSold(reservationId = null) {
@@ -1555,7 +1595,7 @@ export default function App() {
         </aside>
       </section>}
     </> : showAdmin && isAdmin ? <>    {showAdmin && isAdmin && <section className="admin-page page-panel"><div className="page-panel-heading"><div><p className="eyebrow">SYSTEMINSTÄLLNINGAR</p><h1><Users size={24} /> Administration</h1><p className="muted">Hantera personal, behörigheter och konton.</p></div></div><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p><div className="admin-users-heading"><span className="muted">{adminUsers.filter(user => user.is_active !== false).length} aktiva medarbetare</span>{adminUsers.some(user => user.is_active === false) && <button type="button" className="admin-refresh-button" onClick={() => setShowInactiveUsers(value => !value)}>{showInactiveUsers ? 'Dölj avaktiverade' : `Visa avaktiverade (${adminUsers.filter(user => user.is_active === false).length})`}</button>}</div>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.filter(user => showInactiveUsers || user.is_active !== false).map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}<div className="detail-section auth-activity-section"><button type="button" className="admin-refresh-button" onClick={() => { const next = !showAuthActivity; setShowAuthActivity(next); if (next) loadAuthActivity(); }}><History size={15} /> {showAuthActivity ? 'Dölj inloggningshistorik' : 'Visa inloggningshistorik'}</button>{showAuthActivity && <div className="auth-activity-list">{authActivityLoading ? <p className="muted">Hämtar historik…</p> : authActivity.length === 0 ? <p className="muted">Ingen inloggningshistorik ännu.</p> : authActivity.map(item => <div className="auth-activity-row" key={item.id}><span className={item.event_type === 'login' ? 'auth-activity-icon login' : 'auth-activity-icon logout'}>{item.event_type === 'login' ? <LogIn size={16} /> : <LogOut size={16} />}</span><div><strong>{item.profiles?.full_name || 'Okänd användare'}</strong><small>{item.event_type === 'login' ? 'Loggade in' : 'Loggade ut'} · {dateTime(item.created_at)}</small></div></div>)}</div>}</div></div></section>}</> : <>
-    <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => setShowAdd(true)}><Plus size={18} /> Lägg till maskin</button></section>
+    <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till maskin</button></section>
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
     <section className="stats">
       {[
@@ -1621,7 +1661,7 @@ export default function App() {
         </>}
       </div>}
       {!isSoldContext && (
-      <div className="detail-section inventory-controls"><h3>Lager och leveranser</h3><div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div><div className="quantity-control"><div className="quantity-heading"><strong>Antal på väg hem</strong><span>Beställt men ännu inte levererat</span></div><input aria-label="Antal på väg hem" type="number" min="0" step="1" value={incomingEdit} onChange={e => setIncomingEdit(e.target.value)} /><button onClick={saveIncomingQuantity} disabled={Number(incomingEdit) === Number(selected.incoming_quantity || 0)}>Spara antal på väg hem</button>{Number(selected.incoming_quantity || 0) > 0 && <div className="receive-panel"><p className="muted">Ta emot en hel eller del av leveransen. Antalet flyttas då till lagret.</p><label><strong>Antal mottagna</strong><input type="number" min="1" max={Number(selected.incoming_quantity)} step="1" value={receiveQuantity} onChange={e => setReceiveQuantity(e.target.value)} /></label><button className="primary" onClick={receiveIncomingQuantity}>Ta emot leverans</button></div>}</div>{Number(selected.sold_quantity || 0) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}
+      <div className="detail-section inventory-controls"><h3>Lager och leveranser</h3><div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div><div className="quantity-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.length === 0 && <p className="muted">Inga registrerade leveranser.</p>}{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}><div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span>{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div><div className="delivery-add-fields"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ETA</button></div><div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button className="primary" onClick={() => receiveIncomingDelivery(delivery)}>Registrera mottaget</button></div></div>)}<div className="delivery-add-fields"><label>Antal<input type="number" min="1" value={newDelivery.quantity} onChange={e => setNewDelivery({ ...newDelivery, quantity: e.target.value })}/></label><label>ETA år<input type="number" min="2020" max="2100" value={newDelivery.eta_year} onChange={e => setNewDelivery({ ...newDelivery, eta_year: e.target.value })}/></label><label>Vecka<input type="number" min="1" max="53" value={newDelivery.eta_week} onChange={e => setNewDelivery({ ...newDelivery, eta_week: e.target.value })}/></label></div><button onClick={addIncomingDelivery}>+ Lägg till leverans</button></div>{Number(selected.sold_quantity || 0) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}
 
       </div>
       )}
@@ -1659,9 +1699,11 @@ export default function App() {
     {showAdd && <div className="overlay" onClick={() => setShowAdd(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowAdd(false)}><X /></button><p className="eyebrow">NY MASKIN</p><h2>Lägg till maskin</h2><form className="machine-form structured-form" onSubmit={addMachine}>
       <div className="form-section"><h3>Grunduppgifter</h3><p className="muted">Identifiera maskinen i registret.</p><div className="form-fields"><label>Maskinnummer<input value={form.machine_number} onChange={e => setForm({ ...form, machine_number: e.target.value })} placeholder="Ex. ER2500T-01" /></label><label>Fabrikat<input value={form.brand} onChange={e => setForm({ ...form, brand: e.target.value })} required placeholder="Tillverkare" /></label><label className="full">Modell<input value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} required placeholder="Modellbeteckning" /></label></div></div>
       <div className="form-section"><h3>Maskininformation</h3><div className="form-fields"><label>Årsmodell<input type="number" value={form.year} onChange={e => setForm({ ...form, year: e.target.value })} /></label><label>Timmar<input type="number" min="0" value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} /></label></div></div>
-      <div className="form-section"><h3>Pris och lager</h3><div className="form-fields"><label>Pris (kr, exkl. moms)<input type="number" min="0" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} /></label><label>Antal i lager<input type="number" min="0" value={form.stock_quantity} onChange={e => setForm({ ...form, stock_quantity: e.target.value })} /></label><label className="full">Antal på väg hem<input type="number" min="0" value={form.incoming_quantity} onChange={e => setForm({ ...form, incoming_quantity: e.target.value })} /></label></div></div>
+      <div className="form-section"><h3>Pris och lager</h3><div className="form-fields"><label>Pris (kr, exkl. moms)<input type="number" min="0" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} /></label><label>Antal i lager<input type="number" min="0" value={form.stock_quantity} onChange={e => setForm({ ...form, stock_quantity: e.target.value })} /></label><div className="full delivery-editor"><strong>Inkommande leveranser</strong><p className="muted">Lägg till varje beställning med eget antal och ETA-vecka.</p>{addDeliveries.map((d, i) => <div className="delivery-row" key={i}><span>{d.quantity} st · {d.eta_year} v{String(d.eta_week).padStart(2, '0')}</span><button type="button" className="text-button" onClick={() => setAddDeliveries(rows => rows.filter((_, index) => index !== i))}>Ta bort</button></div>)}<div className="delivery-add-fields"><label>Antal<input type="number" min="1" value={newDelivery.quantity} onChange={e => setNewDelivery({ ...newDelivery, quantity: e.target.value })} /></label><label>ETA år<input type="number" min="2020" max="2100" value={newDelivery.eta_year} onChange={e => setNewDelivery({ ...newDelivery, eta_year: e.target.value })} /></label><label>Vecka<input type="number" min="1" max="53" value={newDelivery.eta_week} onChange={e => setNewDelivery({ ...newDelivery, eta_week: e.target.value })} /></label></div><button type="button" onClick={() => { const q=Number.parseInt(newDelivery.quantity,10), y=Number.parseInt(newDelivery.eta_year,10), w=Number.parseInt(newDelivery.eta_week,10); if(q>0 && y>=2020 && y<=2100 && w>=1 && w<=53) { setAddDeliveries(rows => [...rows, { quantity:q, eta_year:y, eta_week:w }]); setNewDelivery(emptyDelivery()); } else setError('Ange antal, år och vecka för leveransen.'); }}>+ Lägg till leverans</button></div></div></div>
       <div className="form-section"><h3>Beskrivning</h3><label className="full">Information om maskinen<textarea rows={4} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Beskriv skick, utrustning och annan relevant information…" /></label></div>
       <button className="primary wide">Spara maskin</button></form></section></div>}
     </>}
+  <style>{`.delivery-editor{display:flex;flex-direction:column;gap:10px}.delivery-add-fields{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.delivery-row,.incoming-delivery-title,.receive-delivery-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.delivery-row,.incoming-delivery-card{padding:10px;border:1px solid #3b3b3b;border-radius:10px;margin-top:8px}.incoming-delivery-card{display:flex;flex-direction:column;gap:10px}.incoming-delivery-title span{color:#aaa}.receive-delivery-row label{flex:1}.receive-delivery-row input{width:100%}.icon-button{background:transparent;border:0;color:#aaa;padding:6px}.text-button{background:transparent;border:0;color:#e02b32;padding:4px}`}</style>
   </main>;
 }
+
