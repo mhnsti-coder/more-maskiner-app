@@ -784,7 +784,7 @@ export default function App() {
     event.preventDefault(); setError('');
     const { data: { user } } = await supabase.auth.getUser();
     const incomingTotal = addDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0);
-    const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), incoming_quantity: incomingTotal, status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 ? 'in_stock' : incomingTotal > 0 ? 'incoming' : 'sold', created_by: user.id };
+    const payload = { ...form, year: form.year ? Number(form.year) : null, hours: form.hours ? Number(form.hours) : null, price: form.price ? Number(form.price) : null, stock_quantity: Math.max(0, Number.parseInt(form.stock_quantity, 10) || 0), incoming_quantity: incomingTotal, status: (Number.parseInt(form.stock_quantity, 10) || 0) > 0 || incomingTotal > 0 ? 'in_stock' : 'sold', created_by: user.id };
     const { data: created, error } = await supabase.from('machines').insert(payload).select('id').single();
     if (error) setError(error.message); else {
       if (addDeliveries.length) { const { error: deliveryError } = await supabase.from('machine_incoming_deliveries').insert(addDeliveries.map(d => ({ ...d, machine_id: created.id, created_by: user.id }))); if (deliveryError) { setError('Maskinen sparades, men leveranserna kunde inte sparas: ' + deliveryError.message); return; } }
