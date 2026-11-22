@@ -1400,7 +1400,7 @@ export default function App() {
       .online-presence-wrap{position:relative;display:flex;align-items:center;flex:0 0 auto}
       .online-presence-trigger{display:inline-flex;align-items:center;gap:5px;padding:5px 3px;border:0;background:transparent;color:#929292;font-size:11px;white-space:nowrap;cursor:pointer}
       .online-presence-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#43ad70;box-shadow:0 0 5px #43ad7040}
-      .online-presence-popover{position:absolute;z-index:30;top:calc(100% + 10px);right:0;width:min(220px,70vw);padding:10px 12px;border:1px solid #383838;border-radius:9px;background:#1c1c1c;box-shadow:0 8px 24px #0008}
+      .online-presence-popover{position:absolute;z-index:1000;top:calc(100% + 10px);right:0;left:auto;width:220px;max-width:calc(100vw - 32px);min-width:0;box-sizing:border-box;padding:10px 12px;border:1px solid #383838;border-radius:9px;background:#1c1c1c;box-shadow:0 8px 24px #0008;overflow-wrap:anywhere}.online-presence-person{min-width:0}.online-presence-person>span:last-child{min-width:0;overflow-wrap:anywhere}
       .online-presence-popover strong{display:block;margin:0 0 7px;color:#ddd;font-size:11px;font-weight:700}
       .online-presence-person{display:flex;align-items:center;gap:8px;padding:6px 0;color:#c9c9c9;font-size:12px}
       .online-presence-initials{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#303943;color:#e4e9ed;font-size:9px;font-weight:800}
