@@ -3,13 +3,14 @@ import { createClient } from '@supabase/supabase-js';
 import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
-const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem' };
+const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem', mixed_reserved: 'I lager + reserverad' };
 // Statusen beskriver fysiskt lager och inkommande leverans var för sig. Inkommande antal räknas aldrig som lager.
 const displayMachineStatus = machine => {
   const stock = Math.max(0, Number(machine.stock_quantity ?? 1));
   const reserved = Math.max(0, Number(machine.reserved_quantity || 0));
   const available = Math.max(0, stock - reserved);
   const incoming = Math.max(0, Number(machine.incoming_quantity || 0));
+  if (available > 0 && reserved > 0) return 'mixed_reserved';
   if (available > 0 && incoming > 0) return 'mixed';
   if (available > 0) return 'in_stock';
   if (reserved > 0 && stock > 0) return 'reserved';
@@ -1263,6 +1264,7 @@ export default function App() {
       .machine-photo img{width:100%;height:100%;object-fit:cover;border-radius:10px}
       .status.partial_sold{background:#493817;color:#f2c66d;border:1px solid #765b25}
       .status.mixed{background:#3b2c18;color:#ffd27a;border:1px solid #8a6428}
+      .status.mixed_reserved{background:#3b2c18;color:#ffd27a;border:1px solid #8a6428}
       .machine-photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:12px;margin-top:14px}
       .machine-photo-item{min-width:0;display:flex;flex-direction:column;gap:7px}
       .machine-photo-item img{width:100%;height:115px;object-fit:cover;border-radius:8px;border:1px solid #444}
