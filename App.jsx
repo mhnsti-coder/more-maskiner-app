@@ -95,6 +95,11 @@ export default function App() {
   const [announcementBusy, setAnnouncementBusy] = useState(false);
   const [showDeletedAnnouncements, setShowDeletedAnnouncements] = useState(false);
   const [announcementDeleteBusy, setAnnouncementDeleteBusy] = useState(false);
+  const [homeNotices, setHomeNotices] = useState([]);
+  const [showHomeNoticeForm, setShowHomeNoticeForm] = useState(false);
+  const [editingHomeNotice, setEditingHomeNotice] = useState(null);
+  const [homeNoticeForm, setHomeNoticeForm] = useState({ title: '', body: '', is_important: false, expires_at: '' });
+  const [homeNoticeBusy, setHomeNoticeBusy] = useState(false);
   const [showAnnouncementForm, setShowAnnouncementForm] = useState(false);
   const [showInternInfo, setShowInternInfo] = useState(false);
   const [internInfoMode, setInternInfoMode] = useState('news');
@@ -155,6 +160,37 @@ export default function App() {
     } catch {
       // Lässtatusen fungerar under den här sessionen även om lokal lagring inte är tillgänglig.
     }
+  }
+
+  async function loadHomeNotices() {
+    const { data, error } = await supabase.from('home_important_notices').select('*').or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`).order('is_important', { ascending: false }).order('created_at', { ascending: false });
+    if (error) { console.error('Kunde inte hämta viktig information:', error.message); return; }
+    setHomeNotices(data || []);
+  }
+
+  function startHomeNoticeEdit(notice = null) {
+    setEditingHomeNotice(notice);
+    setHomeNoticeForm(notice ? { title: notice.title || '', body: notice.body || '', is_important: Boolean(notice.is_important), expires_at: notice.expires_at ? new Date(notice.expires_at).toISOString().slice(0,16) : '' } : { title: '', body: '', is_important: false, expires_at: '' });
+    setShowHomeNoticeForm(true);
+  }
+
+  async function saveHomeNotice(event) {
+    event.preventDefault();
+    if (!homeNoticeForm.title.trim() || !homeNoticeForm.body.trim()) return;
+    setHomeNoticeBusy(true);
+    const payload = { title: homeNoticeForm.title.trim(), body: homeNoticeForm.body.trim(), is_important: homeNoticeForm.is_important, expires_at: homeNoticeForm.expires_at ? new Date(homeNoticeForm.expires_at).toISOString() : null, updated_at: new Date().toISOString() };
+    const query = editingHomeNotice ? supabase.from('home_important_notices').update(payload).eq('id', editingHomeNotice.id) : supabase.from('home_important_notices').insert({ ...payload, created_by: session.user.id });
+    const { error } = await query;
+    if (error) setError('Kunde inte spara viktig information: ' + error.message);
+    else { setShowHomeNoticeForm(false); setEditingHomeNotice(null); await loadHomeNotices(); }
+    setHomeNoticeBusy(false);
+  }
+
+  async function deleteHomeNotice(notice) {
+    if (!window.confirm(`Ta bort informationen ”${notice.title}”?`)) return;
+    const { error } = await supabase.from('home_important_notices').delete().eq('id', notice.id);
+    if (error) setError('Kunde inte ta bort informationen: ' + error.message);
+    else await loadHomeNotices();
   }
 
   async function openInternInfo() {
@@ -686,7 +722,7 @@ export default function App() {
     }
   }
 
-  useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); loadPrivateConversations(); loadReservations(true); } }, [session?.user?.id]);
+  useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); loadPrivateConversations(); loadReservations(true); loadHomeNotices(); } }, [session?.user?.id]);
 
   const filtered = useMemo(() => machines.filter(m => {
     const q = search.toLowerCase();
@@ -1193,6 +1229,7 @@ export default function App() {
       .home-quick-action{display:flex;align-items:center;gap:5px;flex:0 0 auto;color:#d94a50;font-size:11px;font-weight:700}
       .home-quick-row:focus-visible{outline:2px solid #d92730;outline-offset:2px;border-radius:5px}
       @media(min-width:700px){.home-quick-overview{max-width:680px}.home-quick-row{padding:12px 3px}}
+      .home-notices{margin:0 0 22px;max-width:680px}.home-notices-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px}.home-notices-head h2{margin:0;font-size:13px;letter-spacing:.08em}.home-notice-card{padding:12px 13px;margin:8px 0;border:1px solid #343434;border-left:4px solid #4d91c9;border-radius:10px;background:#202020}.home-notice-card.important{border-left-color:#d92730}.home-notice-card h3{margin:5px 0 4px;font-size:14px}.home-notice-card p{margin:0;color:#ccc;font-size:13px;white-space:pre-wrap}.home-notice-meta{display:flex;align-items:center;gap:8px;color:#999;font-size:10px}.home-notice-actions{display:flex;gap:8px;margin-top:9px}.home-notice-form{display:grid;gap:9px;padding:13px;margin:10px 0;border:1px solid #444;border-radius:10px;background:#1c1c1c}.home-notice-form input,.home-notice-form textarea{width:100%;box-sizing:border-box}.home-notice-form textarea{min-height:76px}.home-notice-form label{display:flex;align-items:center;gap:8px;font-size:12px;color:#ddd}
       .main-tabs{display:flex;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
@@ -1443,6 +1480,22 @@ export default function App() {
         <span className="home-quick-action">Läs <span aria-hidden="true">›</span></span>
       </button>}
     </section>
+    {homeNotices.length > 0 || isAdmin ? <section className="home-notices" aria-label="Viktig information">
+      <div className="home-notices-head"><h2>VIKTIG INFORMATION</h2>{isAdmin && <button type="button" className="secondary-action" onClick={() => startHomeNoticeEdit()}><Plus size={15}/> Lägg till</button>}</div>
+      {homeNotices.map(notice => <article className={`home-notice-card ${notice.is_important ? 'important' : ''}`} key={notice.id}>
+        <div className="home-notice-meta"><strong>{notice.is_important ? 'VIKTIGT' : 'INFORMATION'}</strong><span>{dateTime(notice.created_at)}</span>{notice.expires_at && <span>Visas till {date(notice.expires_at)}</span>}</div>
+        <h3>{notice.title}</h3><p>{notice.body}</p>
+        {isAdmin && <div className="home-notice-actions"><button type="button" onClick={() => startHomeNoticeEdit(notice)}>Ändra</button><button type="button" onClick={() => deleteHomeNotice(notice)} style={{color:'#f08080'}}>Ta bort</button></div>}
+      </article>)}
+      {showHomeNoticeForm && isAdmin && <form className="home-notice-form" onSubmit={saveHomeNotice}>
+        <strong>{editingHomeNotice ? 'Ändra information' : 'Ny information'}</strong>
+        <input value={homeNoticeForm.title} onChange={e => setHomeNoticeForm(v => ({...v,title:e.target.value}))} placeholder="Rubrik" maxLength={90} required />
+        <textarea value={homeNoticeForm.body} onChange={e => setHomeNoticeForm(v => ({...v,body:e.target.value}))} placeholder="Kort meddelande" maxLength={350} required />
+        <label><input type="checkbox" checked={homeNoticeForm.is_important} onChange={e => setHomeNoticeForm(v => ({...v,is_important:e.target.checked}))}/> Markera som viktigt</label>
+        <label>Visa till och med <input type="datetime-local" value={homeNoticeForm.expires_at} onChange={e => setHomeNoticeForm(v => ({...v,expires_at:e.target.value}))}/></label>
+        <div className="home-notice-actions"><button className="primary" disabled={homeNoticeBusy}>{homeNoticeBusy ? 'Sparar…' : 'Publicera'}</button><button type="button" onClick={() => {setShowHomeNoticeForm(false);setEditingHomeNotice(null);}}>Avbryt</button></div>
+      </form>}
+    </section> : null}
     </>}
     {showReservations ? <>
       <section className="hero page-hero"><div><p className="eyebrow">FÖRSÄLJNING & BOKNING</p><h1>Reservationer</h1><p className="muted">Överblick över kundernas bokade maskiner och återstående antal.</p></div><button className="secondary-action" onClick={loadReservations}><RefreshCw size={16}/> Uppdatera</button></section>
