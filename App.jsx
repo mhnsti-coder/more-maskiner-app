@@ -125,6 +125,8 @@ export default function App() {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushMessage, setPushMessage] = useState('');
+  const [appRefreshBusy, setAppRefreshBusy] = useState(false);
+  const [appRefreshMessage, setAppRefreshMessage] = useState('');
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isSuperAdminAccount = session?.user?.email?.trim().toLowerCase() === 'mhnsti@gmail.com';
   const hasAdminRole = currentProfile?.role === 'admin';
@@ -430,6 +432,29 @@ export default function App() {
       }
     }
     setLoading(false);
+  }
+
+  async function refreshAppData() {
+    if (!session || appRefreshBusy) return;
+    setAppRefreshBusy(true);
+    setAppRefreshMessage('');
+    setError('');
+    try {
+      await Promise.all([
+        loadMachines(),
+        loadProfiles(),
+        loadAnnouncements(),
+        loadPrivateConversations(),
+        loadReservations(true),
+        loadHomeNotices(),
+      ]);
+      setAppRefreshMessage('Allt innehåll är uppdaterat.');
+      window.setTimeout(() => setAppRefreshMessage(''), 2600);
+    } catch (refreshError) {
+      setError('Appen kunde inte uppdateras helt: ' + (refreshError?.message || 'Okänt fel'));
+    } finally {
+      setAppRefreshBusy(false);
+    }
   }
 
   async function loadReservations(silent = false) {
@@ -1385,6 +1410,7 @@ export default function App() {
       .admin-status-button{border-color:#8b3434;color:#ff9a9a}
       .admin-user-controls button:disabled,.admin-user-controls select:disabled{opacity:.55}
       .admin-users-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+      .refresh-spinning{animation:more-refresh-spin .8s linear infinite}@keyframes more-refresh-spin{to{transform:rotate(360deg)}}
       .admin-refresh-button{display:inline-flex;align-items:center;gap:7px;background:#242424;color:#eee;border:1px solid #555;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
       .admin-refresh-button:disabled{opacity:.55;cursor:wait}
       .auth-activity-section{margin-top:18px;padding-top:16px;border-top:1px solid #333}
@@ -1555,9 +1581,10 @@ export default function App() {
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
 
     `}</style>
-    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={loadMachines} aria-label="Uppdatera"><RefreshCw size={18} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={refreshAppData} disabled={appRefreshBusy} aria-label="Uppdatera hela appen" title={appRefreshBusy ? "Uppdaterar innehållet…" : "Uppdatera hela appen"}><RefreshCw size={18} className={appRefreshBusy ? "refresh-spinning" : ""} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className={`main-tabs ${isAdmin ? 'admin-tabs' : 'seller-tabs'}`}><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
+    {appRefreshMessage && <p className="muted" role="status" style={{ margin: '8px 0', fontSize: 12, color: '#9bd5a5' }}>{appRefreshMessage}</p>}
     {!showReservations && !showInternInfo && !showAdmin && <>
     <section className={`home-quick-overview ${homeNotices.length === 0 && !isAdmin ? 'compact-after' : ''}`} aria-label="Min översikt">
       <button type="button" className="home-quick-heading home-quick-toggle" aria-expanded={homeOverviewExpanded} onClick={() => setHomeOverviewExpanded(v => !v)}><span>MIN ÖVERSIKT</span><ChevronDown size={16} className={homeOverviewExpanded ? 'expanded' : ''} /></button>
