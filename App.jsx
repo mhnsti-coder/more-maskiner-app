@@ -377,7 +377,7 @@ export default function App() {
       ...thread,
       participants: (participants || []).filter(item => item.conversation_id === thread.id),
       messages: (messages || []).filter(item => item.conversation_id === thread.id)
-    })).filter(thread => isAdmin || thread.participants.some(item => item.user_id === session.user.id));
+    })).filter(thread => thread.participants.length > 0 && thread.messages.length > 0 && (isAdmin || thread.participants.some(item => item.user_id === session.user.id)));
     setPrivateConversations(grouped);
     if (selectedPrivateConversation) {
       const refreshed = grouped.find(item => item.id === selectedPrivateConversation.id) || null;
@@ -1436,8 +1436,8 @@ export default function App() {
             </form>
           </> : selectedPrivateConversation ? <>
             <div className="private-view-heading"><div><p className="eyebrow">PRIVAT KONVERSATION</p><h2>{selectedPrivateConversation.participants.filter(p => p.user_id !== session.user.id).map(p => profiles.find(profile => profile.id === p.user_id)?.full_name || 'Medarbetare').join(', ') || 'Konversation'}</h2></div><button type="button" onClick={() => setSelectedPrivateConversation(null)}>Stäng</button></div>
-            <div className="private-message-list">{privateMessages.map(message => <div className={`private-bubble ${message.sender_id === session.user.id ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{profiles.find(p => p.id === message.sender_id)?.full_name || 'Medarbetare'} · {dateTime(message.created_at)}</small></div>)}</div>
             {selectedPrivateConversation.participants.some(p => p.user_id === session.user.id) ? <form className="comment-form private-reply-form" onSubmit={sendPrivateReply}><textarea rows={2} value={privateMessageText} onChange={e => setPrivateMessageText(e.target.value)} maxLength={5000} placeholder="Skriv ett svar…" required/><button className="primary" disabled={privateBusy || !privateMessageText.trim()}><Send size={16}/> Skicka</button></form> : <p className="muted">Administratörsvy – endast deltagarna kan svara i konversationen.</p>}
+            <div className="private-message-list">{privateMessages.map(message => <div className={`private-bubble ${message.sender_id === session.user.id ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{profiles.find(p => p.id === message.sender_id)?.full_name || 'Medarbetare'} · {dateTime(message.created_at)}</small></div>)}</div>
           </> : <div className="empty"><Mail size={32}/><h3>Välj en konversation</h3><p>Öppna ett meddelande i inkorgen eller starta ett nytt.</p></div>}
         </div>
       </section>}
