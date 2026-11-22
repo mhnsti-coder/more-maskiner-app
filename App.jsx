@@ -1202,6 +1202,11 @@ export default function App() {
       .interninfo-switch button.active{background:#3a1719;border-color:#d92730;color:#fff}
       .private-message-layout{display:flex;flex-direction:column;gap:16px;min-height:420px}
       .private-conversation-list,.private-conversation-view,.private-compose-panel{background:#191919;border:1px solid #353535;border-radius:12px;padding:16px;min-width:0}
+      .private-conversation-view.is-empty{min-height:0;padding:12px 16px}
+      .private-conversation-view.is-empty .empty{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;column-gap:10px;row-gap:2px;min-height:0;padding:0;text-align:left}
+      .private-conversation-view.is-empty .empty>svg{grid-row:1 / span 2;width:24px;height:24px}
+      .private-conversation-view.is-empty .empty h3{margin:0;font-size:15px;line-height:1.3}
+      .private-conversation-view.is-empty .empty p{grid-column:2;margin:0;font-size:12px;line-height:1.4}
       .private-list-heading,.private-view-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
       .private-compose-panel h2{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:19px}
       .private-compose-actions{display:flex;gap:10px;flex-wrap:wrap}
@@ -1468,7 +1473,7 @@ export default function App() {
         {selectedPrivateConversation ? <div className="private-conversation-view">
           <div className="private-view-heading"><div><p className="eyebrow">KONVERSATION</p><h2>{selectedPrivateConversation.participants.filter(p => p.user_id !== session.user.id).map(p => profiles.find(profile => profile.id === p.user_id)?.full_name || 'Medarbetare').join(', ') || 'Privat konversation'}</h2></div></div>
           <div className="private-message-list">{[...privateMessages].sort((a,b) => new Date(b.created_at) - new Date(a.created_at)).map(message => <div className={`private-bubble ${message.sender_id === session.user.id ? 'mine' : ''}`} key={message.id}><p>{message.body}</p><small>{profiles.find(p => p.id === message.sender_id)?.full_name || 'Medarbetare'} · {dateTime(message.created_at)}</small>{(isAdmin || message.sender_id === session.user.id) && <button type="button" className="private-message-delete" title="Ta bort meddelande för alla" aria-label="Ta bort meddelande för alla" disabled={privateBusy} onClick={() => deletePrivateMessage(message)}><Trash2 size={14}/></button>}</div>)}</div>
-        </div> : <div className="private-conversation-view"><div className="empty"><Mail size={32}/><h3>Välj en konversation</h3><p>Öppna ett meddelande i inkorgen eller starta ett nytt.</p></div></div>}
+        </div> : <div className="private-conversation-view is-empty"><div className="empty"><Mail size={32}/><h3>Välj en konversation</h3><p>Öppna ett meddelande i inkorgen eller starta ett nytt.</p></div></div>}
         <aside className="private-conversation-list">
           <div className="private-list-heading"><h2><Mail size={18}/> Inkorg</h2><button type="button" className="admin-refresh-button" onClick={loadPrivateConversations} disabled={privateBusy}><RefreshCw size={14}/> Uppdatera</button></div>
           {privateBusy && privateConversations.length === 0 ? <p className="muted">Hämtar meddelanden…</p> : privateConversations.length === 0 ? <p className="muted">Inga privata meddelanden ännu.</p> : [...privateConversations].sort((a,b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at)).map(thread => {
