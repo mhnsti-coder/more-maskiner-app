@@ -58,6 +58,7 @@ export default function App() {
   const [saleQuantity, setSaleQuantity] = useState('1');
   const [showDirectSaleForm, setShowDirectSaleForm] = useState(false);
   const [overstockConfirmation, setOverstockConfirmation] = useState(null);
+  const [overstockConfirmed, setOverstockConfirmed] = useState(false);
   const [directSaleForm, setDirectSaleForm] = useState({ customer_name: '', customer_phone: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -1368,6 +1369,27 @@ export default function App() {
     setSaving(false);
   }
 
+  function beginDirectSale() {
+    if (!selected) return;
+    const amount = Number.parseInt(saleQuantity, 10);
+    if (!Number.isInteger(amount) || amount < 1) {
+      setError('Ange ett giltigt antal att sälja.');
+      return;
+    }
+    const physicalAvailable = availableStock(selected);
+    const incomingAvailable = Math.max(0, Number(selected.incoming_quantity || 0));
+    const shortage = Math.max(0, amount - physicalAvailable);
+    const fromIncoming = Math.min(shortage, incomingAvailable);
+    const toOrder = Math.max(0, shortage - fromIncoming);
+    setError('');
+    setOverstockConfirmed(false);
+    if (shortage > 0) {
+      setOverstockConfirmation({ amount, physicalAvailable, incomingAvailable, fromIncoming, toOrder });
+      return;
+    }
+    setShowDirectSaleForm(true);
+  }
+
   async function markSold(reservationId = null, confirmedOverstock = false) {
     if (!selected) return;
     if (isReservationContext && reservationId === null) {
@@ -1420,6 +1442,7 @@ export default function App() {
       if (reservationId === null) {
         setShowDirectSaleForm(false);
         setOverstockConfirmation(null);
+        setOverstockConfirmed(false);
         setDirectSaleForm({ customer_name: '', customer_phone: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
       }
       await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected, selectedReservationId);
@@ -1925,7 +1948,7 @@ export default function App() {
     {error && <div className="error-banner">{error}</div>}
     {filter === 'reorder' || (filter === 'overview' && !search.trim()) ? null : loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>{filter === 'reorder' ? 'Inga produkter att beställa' : 'Inga produkter att visa'}</h3><p>{filter === 'reorder' ? 'Det finns inga öppna beställningsbehov just nu.' : 'Prova att ändra sökning eller filter, eller lägg till en produkt.'}</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (availableStock(machine) > 0 ? 'in_stock' : Number(machine.incoming_quantity || 0) > 0 ? 'incoming' : 'out_of_stock')}>{availableStock(machine) > 0 ? `${availableStock(machine)} st i lager` : Number(machine.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(machine.incoming_quantity)} st på väg hem` : 'Slut i lager'}</span></div><div className="machine-info"><p className="machine-no">{machine.article_code ? `Artikelkod ${machine.article_code}` : (machine.machine_number || 'Inget artikelnummer')}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Produkt'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{availableStock(machine)}</strong><small>Lager</small></span><span><strong>{displayedSoldQuantity(machine)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong></div></button>)}</section>}
 
-    {selected && <div className="overlay" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); setShowSalesHistory(false); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); setShowSalesHistory(false); }}><X /></button><p className="eyebrow">PRODUKTDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong><p className="muted">Lagerstatus: <strong>{availableStock(selected) > 0 ? `Finns i lager · ${availableStock(selected)} st` : Number(selected.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(selected.incoming_quantity)} st på väg hem` : 'Slut i lager'}</strong></p>
+    {selected && <div className="overlay" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); setShowSalesHistory(false); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); setShowSalesHistory(false); }}><X /></button><p className="eyebrow">PRODUKTDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.article_code ? `Artikelkod ${selected.article_code}` : (selected.machine_number || 'Artikelkod saknas')}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong><p className="muted">Lagerstatus: <strong>{availableStock(selected) > 0 ? `Finns i lager · ${availableStock(selected)} st` : Number(selected.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(selected.incoming_quantity)} st på väg hem` : 'Slut i lager'}</strong></p>
       <div className="dialog-actions"><button type="button" className="secondary-action" onClick={openEditMachine}>Redigera maskinuppgifter</button></div>
       <div className="detail-section">
         <h3>Maskinbilder</h3>
@@ -1954,7 +1977,7 @@ export default function App() {
         <p className="muted">Tillgängligt att sälja: <strong>{availableStock(selected)} st</strong></p>
         <>
           <label className="full">Antal att sälja<input type="number" min="1" step="1" value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label>
-          <button className="primary" onClick={() => { setError(''); setShowDirectSaleForm(true); }} disabled={saving}>Sälj från lagret</button>
+          <button className="primary" onClick={beginDirectSale} disabled={saving}>Sälj från lagret</button>
         </>
       </div>}
       {!isSoldContext && (
@@ -1979,7 +2002,7 @@ export default function App() {
       <button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
 
-    {showDirectSaleForm && selected && <div className="overlay" onClick={() => !saving && setShowDirectSaleForm(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setShowDirectSaleForm(false)} disabled={saving}><X /></button><p className="eyebrow">REGISTRERA FÖRSÄLJNING</p><h2>Kunduppgifter</h2><p className="muted">{selected.brand} {selected.model} · {saleQuantity} st</p><form className="machine-form" onSubmit={e => { e.preventDefault(); markSold(null); }}>
+    {showDirectSaleForm && selected && <div className="overlay" onClick={() => { if (!saving) { setShowDirectSaleForm(false); setOverstockConfirmed(false); } }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setShowDirectSaleForm(false); setOverstockConfirmed(false); }} disabled={saving}><X /></button><p className="eyebrow">REGISTRERA FÖRSÄLJNING</p><h2>Kunduppgifter</h2><p className="muted">{selected.brand} {selected.model} · {saleQuantity} st</p><form className="machine-form" onSubmit={e => { e.preventDefault(); markSold(null, overstockConfirmed); }}>
       <label className="full">Kundens namn<input value={directSaleForm.customer_name} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_name: e.target.value })} required placeholder="Ange kundens namn" /></label>
       <label className="full">Telefonnummer<input type="tel" value={directSaleForm.customer_phone} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_phone: e.target.value })} required placeholder="Ange telefonnummer" /></label>
       <label className="full">Företag (valfritt)<input value={directSaleForm.customer_company} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_company: e.target.value })} /></label>
@@ -1989,7 +2012,7 @@ export default function App() {
       <button className="primary wide" disabled={saving}>{saving ? 'Registrerar…' : 'Fortsätt med försäljningen'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
 
-    {overstockConfirmation && showDirectSaleForm && selected && <div className="overlay" onClick={() => !saving && setOverstockConfirmation(null)}><section className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="overstock-title" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setOverstockConfirmation(null)} disabled={saving}><X /></button><p className="eyebrow">LAGRET RÄCKER INTE</p><h2 id="overstock-title">Bekräfta försäljningen</h2><p>Du försöker sälja <strong>{overstockConfirmation.amount} st</strong>, men det finns bara <strong>{overstockConfirmation.physicalAvailable} st</strong> tillgängliga i lager.</p><div className="reservation-info"><p>På väg hem: <strong>{overstockConfirmation.incomingAvailable} st</strong></p><p>Täcks av inkommande: <strong>{overstockConfirmation.fromIncoming} st</strong></p><p>Behöver beställas: <strong>{overstockConfirmation.toOrder} st</strong></p></div><p className="muted">Om du fortsätter sparas försäljningen med kunduppgifterna och beställningsbehovet registreras automatiskt.</p><button className="primary wide" onClick={() => markSold(null, true)} disabled={saving}>{saving ? 'Registrerar…' : 'Ja, genomför försäljningen'}</button><button className="wide" onClick={() => setOverstockConfirmation(null)} disabled={saving}>Avbryt</button></section></div>}
+    {overstockConfirmation && selected && <div className="overlay" onClick={() => !saving && setOverstockConfirmation(null)}><section className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="overstock-title" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setOverstockConfirmation(null)} disabled={saving}><X /></button><p className="eyebrow">LAGRET RÄCKER INTE</p><h2 id="overstock-title">Försäljningen överstiger lagret</h2><p>Du försöker sälja <strong>{overstockConfirmation.amount} st</strong>, men det finns bara <strong>{overstockConfirmation.physicalAvailable} st</strong> tillgängliga i lager.</p><div className="reservation-info"><p>På väg hem: <strong>{overstockConfirmation.incomingAvailable} st</strong></p><p>Täcks av inkommande: <strong>{overstockConfirmation.fromIncoming} st</strong></p><p>Behöver beställas: <strong>{overstockConfirmation.toOrder} st</strong></p></div><p className="muted">Om du fortsätter sparas försäljningen med kunduppgifterna och beställningsbehovet registreras automatiskt.</p><button className="primary wide" onClick={() => { setOverstockConfirmed(true); setOverstockConfirmation(null); setShowDirectSaleForm(true); }} disabled={saving}>Fortsätt till kundkortet</button><button className="wide" onClick={() => setOverstockConfirmation(null)} disabled={saving}>Avbryt</button></section></div>}
 
     {showReservation && selected && <div className="overlay" onClick={() => { setShowReservation(false); setReservationEndDate(''); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={availableStock(selected)} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><label className="full">Reserverad till och med (valfritt)<input type="date" min={new Date().toLocaleDateString('sv-SE')} value={reservationEndDate} onChange={e => setReservationEndDate(e.target.value)} /><small className="muted">Ansvarig säljare får en pushpåminnelse två dagar före slutdatumet.</small></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
