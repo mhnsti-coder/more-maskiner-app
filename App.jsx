@@ -42,12 +42,8 @@ export default function App() {
   const [authActivityLoading, setAuthActivityLoading] = useState(false);
   const [showAuthActivity, setShowAuthActivity] = useState(false);
   const [releaseNotes, setReleaseNotes] = useState([]);
-  const [developmentStatus, setDevelopmentStatus] = useState(null);
   const [showReleaseHistory, setShowReleaseHistory] = useState(false);
   const [showDevelopmentStatus, setShowDevelopmentStatus] = useState(false);
-  const [releaseForm, setReleaseForm] = useState({ version: '', release_date: new Date().toISOString().slice(0,10), title: '', changes: '' });
-  const [developmentForm, setDevelopmentForm] = useState({ current_version: '', completed: '', remaining: '', next_steps: '', known_issues: '' });
-  const [developmentBusy, setDevelopmentBusy] = useState(false);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
   const [showMachineHistory, setShowMachineHistory] = useState(false);
@@ -915,40 +911,11 @@ export default function App() {
 
   async function loadDevelopmentLog() {
     if (!isAdmin) return;
-    const [notesResult, statusResult] = await Promise.all([
-      supabase.from('app_release_notes').select('*').order('release_date', { ascending: false }).order('created_at', { ascending: false }),
-      supabase.from('app_development_status').select('*').eq('id', 1).maybeSingle()
-    ]);
-    if (notesResult.error) setError('Kunde inte hämta versionshistoriken: ' + notesResult.error.message);
-    else setReleaseNotes(notesResult.data || []);
-    if (statusResult.error) setError('Kunde inte hämta utvecklingsstatus: ' + statusResult.error.message);
-    else {
-      const row = statusResult.data;
-      setDevelopmentStatus(row || null);
-      setDevelopmentForm({ current_version: row?.current_version || '', completed: row?.completed || '', remaining: row?.remaining || '', next_steps: row?.next_steps || '', known_issues: row?.known_issues || '' });
-    }
+    const { data, error } = await supabase.from('app_release_notes').select('*').order('release_date', { ascending: false }).order('created_at', { ascending: false });
+    if (error) setError('Kunde inte hämta versionshistoriken: ' + error.message);
+    else setReleaseNotes(data || []);
   }
 
-  async function saveReleaseNote(event) {
-    event.preventDefault();
-    if (!isAdmin || !releaseForm.version.trim() || !releaseForm.title.trim() || !releaseForm.changes.trim()) return;
-    setDevelopmentBusy(true); setError('');
-    const { error } = await supabase.from('app_release_notes').insert({ ...releaseForm, version: releaseForm.version.trim(), title: releaseForm.title.trim(), changes: releaseForm.changes.trim(), created_by: session?.user?.id });
-    if (error) setError('Kunde inte spara versionsuppdateringen: ' + error.message);
-    else { setReleaseForm({ version: '', release_date: new Date().toISOString().slice(0,10), title: '', changes: '' }); await loadDevelopmentLog(); }
-    setDevelopmentBusy(false);
-  }
-
-  async function saveDevelopmentStatus(event) {
-    event.preventDefault();
-    if (!isAdmin) return;
-    setDevelopmentBusy(true); setError('');
-    const payload = { id: 1, ...developmentForm, updated_by: session?.user?.id, updated_at: new Date().toISOString() };
-    const { error } = await supabase.from('app_development_status').upsert(payload, { onConflict: 'id' });
-    if (error) setError('Kunde inte spara utvecklingsstatus: ' + error.message);
-    else await loadDevelopmentLog();
-    setDevelopmentBusy(false);
-  }
 
   async function loadAdminUsers() {
     setAdminUsersLoading(true);
@@ -1920,32 +1887,10 @@ export default function App() {
       <details className="detail-section deleted-machines-section" onToggle={e => { if (e.currentTarget.open) loadDevelopmentLog(); }}>
         <summary className="deleted-machines-summary"><span>Versionshistorik</span><small>{releaseNotes.length}</small></summary>
         <div className="deleted-machines-content">
-          <p className="muted">Dokumentera varje driftsatt uppdatering. Äldre versioner sparas här.</p>
-          <form className="machine-form" onSubmit={saveReleaseNote}>
-            <label>Versionsnummer<input value={releaseForm.version} onChange={e => setReleaseForm(v => ({...v, version:e.target.value}))} placeholder="Ex. 3.1" required /></label>
-            <label>Datum<input type="date" value={releaseForm.release_date} onChange={e => setReleaseForm(v => ({...v, release_date:e.target.value}))} required /></label>
-            <label className="full">Rubrik<input value={releaseForm.title} onChange={e => setReleaseForm(v => ({...v, title:e.target.value}))} placeholder="Ex. Förbättrad sökning" required /></label>
-            <label className="full">Vad har ändrats?<textarea rows={4} value={releaseForm.changes} onChange={e => setReleaseForm(v => ({...v, changes:e.target.value}))} placeholder="Beskriv nya funktioner, förbättringar och buggfixar" required /></label>
-            <button className="primary wide" disabled={developmentBusy}>Spara uppdatering</button>
-          </form>
-          {releaseNotes.length === 0 ? <p className="muted">Inga versioner registrerade ännu.</p> : releaseNotes.map(note => <article className="history-item" key={note.id}><strong>Version {note.version} · {note.title}</strong><small>{new Date(note.release_date + 'T12:00:00').toLocaleDateString('sv-SE')}</small><p style={{whiteSpace:'pre-wrap'}}>{note.changes}</p></article>)}
+          {releaseNotes.length === 0 ? <p className="muted">Inga versioner registrerade ännu.</p> : releaseNotes.map(note => <article className="history-item" key={note.id}><strong>{note.title}</strong><small>{new Date(note.release_date + 'T12:00:00').toLocaleDateString('sv-SE')}</small><p style={{whiteSpace:'pre-wrap'}}>{note.changes}</p></article>)}
         </div>
       </details>
-      <details className="detail-section deleted-machines-section" onToggle={e => { if (e.currentTarget.open) loadDevelopmentLog(); }}>
-        <summary className="deleted-machines-summary"><span>Aktuell utvecklingsstatus</span><small>{developmentStatus?.current_version ? 'v' + developmentStatus.current_version : 'Ej angiven'}</small></summary>
-        <div className="deleted-machines-content">
-          <p className="muted">Vår gemensamma överlämning och kom-ihåg när vi fortsätter utvecklingen i en ny chatt.</p>
-          <form className="machine-form" onSubmit={saveDevelopmentStatus}>
-            <label className="full">Aktuell version<input value={developmentForm.current_version} onChange={e => setDevelopmentForm(v => ({...v, current_version:e.target.value}))} placeholder="Ex. 3.0" /></label>
-            <label className="full">Färdigt och testat<textarea rows={4} value={developmentForm.completed} onChange={e => setDevelopmentForm(v => ({...v, completed:e.target.value}))} /></label>
-            <label className="full">Återstår<textarea rows={4} value={developmentForm.remaining} onChange={e => setDevelopmentForm(v => ({...v, remaining:e.target.value}))} /></label>
-            <label className="full">Nästa steg<textarea rows={3} value={developmentForm.next_steps} onChange={e => setDevelopmentForm(v => ({...v, next_steps:e.target.value}))} /></label>
-            <label className="full">Kända problem<textarea rows={3} value={developmentForm.known_issues} onChange={e => setDevelopmentForm(v => ({...v, known_issues:e.target.value}))} /></label>
-            <button className="primary wide" disabled={developmentBusy}>Spara utvecklingsstatus</button>
-          </form>
-          {developmentStatus?.updated_at && <p className="muted">Senast uppdaterad {dateTime(developmentStatus.updated_at)}</p>}
-        </div>
-      </details></div></section>}</> : <>
+</div></section>}</> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till maskin</button></section>
     <div className="machine-search-intro"><strong>Hitta rätt maskin</strong><p>Sök på artikelkod, maskinnummer, fabrikat eller modell. Du kan söka på hela eller delar av artikelkoden eller namnet.</p></div>
     <section className="toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(searchInput.trim()); }}><div className="search"><Search size={18} /><input placeholder="Artikelkod, maskinnummer eller modell" aria-label="Sök maskiner" value={searchInput} onChange={e => setSearchInput(e.target.value)} /></div>{searchInput && <button type="button" className="machine-search-clear" aria-label="Rensa sökning" onClick={() => { setSearchInput(''); setSearch(''); }}>Rensa</button>}<button className="primary machine-search-submit" type="submit">Sök</button></form></section>
