@@ -1,16 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown } from 'lucide-react';
+import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown, ClipboardList } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Såld', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem', mixed_reserved: 'I lager + såld' };
-const availableStock = machine => Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.external_reserved_quantity || 0));
+const availableStock = machine => Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.external_reserved_quantity || 0) - Number(machine.pending_stock_reserved_quantity || 0));
 const displayedSoldQuantity = machine => Math.max(0, Number(machine.sold_quantity || 0) + Number(machine.external_reserved_quantity || 0));
 // Statusen beskriver fysiskt lager och inkommande leverans var för sig. Inkommande antal räknas aldrig som lager.
 const displayMachineStatus = machine => {
   const stock = Math.max(0, Number(machine.stock_quantity ?? 1));
   const reserved = Math.max(0, Number(machine.external_reserved_quantity || 0));
-  const available = Math.max(0, stock - reserved);
+  const available = Math.max(0, stock - reserved - Number(machine.pending_stock_reserved_quantity || 0));
   const incoming = Math.max(0, Number(machine.incoming_quantity || 0));
   if (available > 0 && incoming > 0) return 'mixed';
   if (available > 0) return 'in_stock';
@@ -36,6 +36,7 @@ export default function App() {
   const [machines, setMachines] = useState([]);
   const [reorderNeeds, setReorderNeeds] = useState([]);
   const [reorderSales, setReorderSales] = useState([]);
+  const [pendingCustomerOrders, setPendingCustomerOrders] = useState([]);
   const [reorderQuantityEdits, setReorderQuantityEdits] = useState({});
   const [profiles, setProfiles] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
@@ -59,7 +60,7 @@ export default function App() {
   const [showDirectSaleForm, setShowDirectSaleForm] = useState(false);
   const [overstockConfirmation, setOverstockConfirmation] = useState(null);
   const [overstockConfirmed, setOverstockConfirmed] = useState(false);
-  const [directSaleForm, setDirectSaleForm] = useState({ customer_name: '', customer_phone: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
+  const [directSaleForm, setDirectSaleForm] = useState({ customer_name: '', customer_phone: '', customer_order_number: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('overview');
@@ -82,8 +83,11 @@ export default function App() {
   const [stockEdit, setStockEdit] = useState('1');
   const [incomingEdit, setIncomingEdit] = useState('0');
   const [incomingDeliveries, setIncomingDeliveries] = useState([]);
+  const [incomingDeliverySales, setIncomingDeliverySales] = useState([]);
   const [editingDeliveryEtaId, setEditingDeliveryEtaId] = useState(null);
   const [newDelivery, setNewDelivery] = useState(emptyDelivery());
+  const [showStockOrder, setShowStockOrder] = useState(false);
+  const [stockOrderDeliveries, setStockOrderDeliveries] = useState([emptyDelivery()]);
   const [addDeliveries, setAddDeliveries] = useState([]);
   const [receiveDeliveryAmounts, setReceiveDeliveryAmounts] = useState({});
   const [receiveQuantity, setReceiveQuantity] = useState('1');
@@ -480,12 +484,44 @@ export default function App() {
       setError(error.message);
     } else {
       const rows = data || [];
-      const { data: reorderRows, error: reorderError } = await supabase.from('machine_reorder_needs').select('*').eq('status', 'open').gt('order_quantity', 0).order('created_at', { ascending: false });
+      const { data: pendingOrderRows, error: pendingOrderError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status, created_at').eq('status', 'pending').order('created_at', { ascending: false });
+      if (pendingOrderError) { setError('Väntande kundorder kunde inte hämtas: ' + pendingOrderError.message); setLoading(false); return; }
+      const { data: activeNeedRows, error: reorderError } = await supabase.from('machine_reorder_needs').select('*').in('status', ['open', 'ordered']).order('created_at', { ascending: false });
       if (reorderError) { setError('Maskinerna kunde hämtas, men beställningsbehov kunde inte hämtas: ' + reorderError.message); setLoading(false); return; }
-      setReorderNeeds(reorderRows || []);
-      const linkedSaleIds = (reorderRows || []).map(row => row.sale_id).filter(Boolean);
+      const linkedSaleIds = (activeNeedRows || []).map(row => row.sale_id).filter(Boolean);
+      let pendingSaleIds = new Set();
       if (linkedSaleIds.length) {
-        const { data: linkedSales, error: linkedSalesError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, sale_date, quantity, note, status').in('id', linkedSaleIds).order('created_at', { ascending: false });
+        const { data: pendingSales, error: pendingSalesError } = await supabase.from('machine_sales').select('id').in('id', linkedSaleIds).eq('status', 'pending');
+        if (pendingSalesError) { setError('Väntande kundorder kunde inte hämtas: ' + pendingSalesError.message); setLoading(false); return; }
+        pendingSaleIds = new Set((pendingSales || []).map(row => row.id));
+      }
+      const pendingReservedByMachine = {};
+      (activeNeedRows || []).forEach(row => { if (row.sale_id && pendingSaleIds.has(row.sale_id)) pendingReservedByMachine[row.machine_id] = (pendingReservedByMachine[row.machine_id] || 0) + Number(row.stock_used || 0); });
+      const reorderRows = (activeNeedRows || []).filter(row => row.status === 'open' && Number(row.order_quantity || 0) > 0);
+      setReorderNeeds(reorderRows);
+      const pendingOrderGroups = new Map();
+      (pendingOrderRows || []).forEach(sale => {
+        const need = (activeNeedRows || []).find(row => row.sale_id === sale.id);
+        const machine = rows.find(row => row.id === sale.machine_id);
+        const orderKey = `${sale.machine_id}::${String(sale.customer_order_number || '').trim().toLowerCase() || sale.id}`;
+        const existing = pendingOrderGroups.get(orderKey);
+        const item = { ...sale, machine, stock_used: Number(need?.stock_used || 0), incoming_covered: Number(need?.incoming_covered || 0), order_quantity: Number(need?.order_quantity || 0) };
+        if (!existing) pendingOrderGroups.set(orderKey, { ...item, id: orderKey, source_sale_ids: [sale.id] });
+        else {
+          existing.quantity += Number(sale.quantity || 0);
+          existing.stock_used += item.stock_used;
+          existing.incoming_covered += item.incoming_covered;
+          existing.order_quantity += item.order_quantity;
+          existing.source_sale_ids.push(sale.id);
+          if (new Date(sale.created_at || sale.sale_date || 0) < new Date(existing.created_at || existing.sale_date || 0)) {
+            existing.sale_date = sale.sale_date;
+            existing.created_at = sale.created_at;
+          }
+        }
+      });
+      setPendingCustomerOrders(Array.from(pendingOrderGroups.values()));
+      if (linkedSaleIds.length) {
+        const { data: linkedSales, error: linkedSalesError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status').in('id', linkedSaleIds).order('created_at', { ascending: false });
         if (linkedSalesError) setError('Beställningsbehov kunde hämtas, men kunduppgifterna kunde inte hämtas: ' + linkedSalesError.message);
         setReorderSales(linkedSales || []);
       } else setReorderSales([]);
@@ -493,7 +529,7 @@ export default function App() {
       if (deliveryError) { setError('Maskinerna kunde hämtas, men inkommande leveranser kunde inte hämtas: ' + deliveryError.message); setLoading(false); return; }
       const incomingByMachine = {};
       (deliveryRows || []).forEach(d => { incomingByMachine[d.machine_id] = (incomingByMachine[d.machine_id] || 0) + Number(d.quantity || 0); });
-      const rowsWithIncoming = rows.map(m => ({ ...m, incoming_quantity: incomingByMachine[m.id] || 0 }));
+      const rowsWithIncoming = rows.map(m => ({ ...m, incoming_quantity: incomingByMachine[m.id] || 0, pending_stock_reserved_quantity: pendingReservedByMachine[m.id] || 0 }));
       // MÖRE använder inte längre kundreservationer i lageröversikten.
       // external_reserved_quantity kommer från artikelregistret och visas som sålt/orderlagt.
       const rowsWithReservations = rowsWithIncoming.map(m => ({ ...m, reserved_quantity: 0, app_reserved_quantity: 0, available_quantity: availableStock(m), displayed_sold_quantity: displayedSoldQuantity(m) }));
@@ -886,7 +922,7 @@ export default function App() {
       if (!groups.has(need.machine_id)) groups.set(need.machine_id, { machine_id: need.machine_id, rows: [], order_quantity: 0, sold_quantity: 0, stock_used: 0, incoming_covered: 0, sales: [] });
       const group = groups.get(need.machine_id);
       group.rows.push(need);
-      group.order_quantity += Number(need.order_quantity || 0);
+      group.order_quantity += Number(need.order_quantity || 0) + Number(need.extra_order_quantity || 0);
       group.sold_quantity += Number(need.sold_quantity || 0);
       group.stock_used += Number(need.stock_used || 0);
       group.incoming_covered += Number(need.incoming_covered || 0);
@@ -900,8 +936,8 @@ export default function App() {
     const q = search.toLowerCase();
     const matches = [m.machine_number, m.article_code, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
     const hasOpenReorder = groupedReorderNeeds.some(n => n.machine_id === m.id);
-    return matches && (filter === 'all' || (filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
-  }), [machines, groupedReorderNeeds, search, filter]);
+    return matches && (filter === 'all' || filter === 'overview' || (filter === 'pending' ? pendingCustomerOrders.some(o => o.machine_id === m.id) : filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
+  }), [machines, groupedReorderNeeds, pendingCustomerOrders, search, filter]);
 
   async function signIn(event) {
     event.preventDefault(); setError(''); setPasswordNotice('');
@@ -1039,6 +1075,15 @@ export default function App() {
     const { data: freshMachine, error: freshMachineError } = await supabase.from('machines').select('*').eq('id', machine.id).single();
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
+    const { data: activeNeeds, error: activeNeedsError } = await supabase.from('machine_reorder_needs').select('sale_id, stock_used').eq('machine_id', machine.id).in('status', ['open', 'ordered']);
+    if (activeNeedsError) setError('Kunde inte hämta reserverat lager för väntande kundorder: ' + activeNeedsError.message);
+    const activeSaleIds = (activeNeeds || []).map(row => row.sale_id).filter(Boolean);
+    let pendingIds = new Set();
+    if (activeSaleIds.length) {
+      const { data: pendingRows } = await supabase.from('machine_sales').select('id').in('id', activeSaleIds).eq('status', 'pending');
+      pendingIds = new Set((pendingRows || []).map(row => row.id));
+    }
+    machine.pending_stock_reserved_quantity = (activeNeeds || []).reduce((sum, row) => sum + (pendingIds.has(row.sale_id) ? Number(row.stock_used || 0) : 0), 0);
     setSelected(machine);
     setShowMachineHistory(false);
     setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setMachineSales([]); setMachinePhotos([]); setActiveReservations([]);
@@ -1048,7 +1093,7 @@ export default function App() {
       supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').order('created_at', { ascending: false }),
       supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true }),
       supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', machine.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false }),
-      supabase.from('machine_sales').select('id, customer_name, customer_company, customer_phone, customer_email, sale_date, quantity, note, status, reversed_at, created_at').eq('machine_id', machine.id).order('created_at', { ascending: false })
+      supabase.from('machine_sales').select('id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status, reversed_at, created_at').eq('machine_id', machine.id).order('created_at', { ascending: false })
     ]);
     if (c.error) setError(c.error.message); else setComments(c.data || []);
     if (h.error) setError(h.error.message); else setHistory(h.data || []);
@@ -1059,7 +1104,17 @@ export default function App() {
       ...photo,
       publicUrl: supabase.storage.from('machine-photos').getPublicUrl(photo.storage_path).data.publicUrl
     })));
-    if (d.error) setError('Kunde inte hämta leveranser: ' + d.error.message); else { setIncomingDeliveries(d.data || []); setReceiveDeliveryAmounts(Object.fromEntries((d.data || []).map(item => [item.id, String(item.quantity)]))); }
+    if (d.error) setError('Kunde inte hämta leveranser: ' + d.error.message); else {
+      const deliveryRows = d.data || [];
+      setIncomingDeliveries(deliveryRows);
+      setReceiveDeliveryAmounts(Object.fromEntries(deliveryRows.map(item => [item.id, String(item.quantity)])));
+      const deliverySaleIds = [...new Set(deliveryRows.map(item => item.sale_id).filter(Boolean))];
+      if (deliverySaleIds.length) {
+        const { data: deliverySales, error: deliverySalesError } = await supabase.from('machine_sales').select('id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity').in('id', deliverySaleIds);
+        if (deliverySalesError) setError('Leveranserna hämtades, men kunduppgifterna kunde inte hämtas: ' + deliverySalesError.message);
+        setIncomingDeliverySales(deliverySales || []);
+      } else setIncomingDeliverySales([]);
+    }
   }
 
   async function uploadMachinePhotos(event) {
@@ -1291,6 +1346,12 @@ export default function App() {
     const { data, error } = await supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', selected.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false });
     if (error) { setError('Kunde inte uppdatera leveranserna: ' + error.message); return; }
     const rows = data || []; setIncomingDeliveries(rows); setReceiveDeliveryAmounts(Object.fromEntries(rows.map(d => [d.id, String(d.quantity)])));
+    const saleIds = [...new Set(rows.map(item => item.sale_id).filter(Boolean))];
+    if (saleIds.length) {
+      const { data: salesRows, error: salesError } = await supabase.from('machine_sales').select('id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity').in('id', saleIds);
+      if (salesError) setError('Leveranserna hämtades, men kunduppgifterna kunde inte hämtas: ' + salesError.message);
+      setIncomingDeliverySales(salesRows || []);
+    } else setIncomingDeliverySales([]);
     const total = rows.reduce((sum, d) => sum + Number(d.quantity || 0), 0);
     await supabase.from('machines').update({ incoming_quantity: total }).eq('id', selected.id);
     setSelected(current => current?.id === selected.id ? { ...current, incoming_quantity: total } : current);
@@ -1304,6 +1365,50 @@ export default function App() {
     const { error } = await supabase.from('machine_incoming_deliveries').insert({ machine_id: selected.id, quantity, eta_year: year, eta_week: week, created_by: session.user.id });
     if (error) { setError('Leveransen kunde inte läggas till: ' + error.message); return; }
     setNewDelivery(emptyDelivery()); setError(''); await refreshIncomingDeliveries();
+  }
+
+  async function createStockReplenishmentOrder(e) {
+    e?.preventDefault();
+    if (!selected || !session?.user?.id) return;
+    const deliveries = stockOrderDeliveries.map(row => ({
+      quantity: Number.parseInt(row.quantity, 10),
+      eta_year: Number.parseInt(row.eta_year, 10),
+      eta_week: Number.parseInt(row.eta_week, 10)
+    }));
+    if (!deliveries.length || deliveries.some(row => !Number.isInteger(row.quantity) || row.quantity < 1 || !Number.isInteger(row.eta_year) || row.eta_year < 2020 || row.eta_year > 2100 || !Number.isInteger(row.eta_week) || row.eta_week < 1 || row.eta_week > 53)) {
+      setError('Ange antal samt ett giltigt ETA-år och en ETA-vecka (1–53) för varje leverans.');
+      return;
+    }
+    setSaving(true); setError('');
+    const totalQuantity = deliveries.reduce((sum, row) => sum + row.quantity, 0);
+    const insertRows = deliveries.map(row => ({
+      machine_id: selected.id,
+      quantity: row.quantity,
+      eta_year: row.eta_year,
+      eta_week: row.eta_week,
+      sale_id: null,
+      is_stock_replenishment: true,
+      created_by: session.user.id
+    }));
+    const { error: insertError } = await supabase.from('machine_incoming_deliveries').insert(insertRows);
+    if (insertError) {
+      setError('Beställningen kunde inte registreras: ' + insertError.message);
+      setSaving(false);
+      return;
+    }
+    const { data: rows, error: sumError } = await supabase.from('machine_incoming_deliveries').select('quantity').eq('machine_id', selected.id);
+    if (sumError) {
+      setError('Beställningen registrerades, men lagrets inkommande antal kunde inte uppdateras: ' + sumError.message);
+    } else {
+      const total = (rows || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+      await supabase.from('machines').update({ incoming_quantity: total }).eq('id', selected.id);
+      setSelected(current => current?.id === selected.id ? { ...current, incoming_quantity: total } : current);
+      setShowStockOrder(false);
+      setStockOrderDeliveries([emptyDelivery()]);
+      await Promise.all([loadMachines(), refreshIncomingDeliveries()]);
+      alert(`${totalQuantity} st har lagts som lagerpåfyllning fördelat på ${deliveries.length} leverans${deliveries.length === 1 ? '' : 'er'} och visas nu under På väg hem.`);
+    }
+    setSaving(false);
   }
 
   async function saveIncomingDeliveryEta(delivery) {
@@ -1325,16 +1430,33 @@ export default function App() {
     if (!selected) return;
     const amount = Number.parseInt(receiveDeliveryAmounts[delivery.id] || String(delivery.quantity), 10);
     if (!Number.isInteger(amount) || amount < 1 || amount > Number(delivery.quantity)) { setError(`Ange ett antal mellan 1 och ${delivery.quantity}.`); return; }
-    const remaining = Number(delivery.quantity) - amount;
-    const deliveryResult = remaining > 0
-      ? await supabase.from('machine_incoming_deliveries').update({ quantity: remaining }).eq('id', delivery.id)
-      : await supabase.from('machine_incoming_deliveries').delete().eq('id', delivery.id);
-    if (deliveryResult.error) { setError('Leveransen kunde inte registreras som mottagen: ' + deliveryResult.error.message); return; }
-    const nextStock = Math.max(0, Number(selected.stock_quantity ?? 0)) + amount;
-    const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: 'in_stock' }).eq('id', selected.id);
-    if (error) { setError('Leveransen markerades, men lagersaldot kunde inte uppdateras: ' + error.message); return; }
-    setSelected(current => current?.id === selected.id ? { ...current, stock_quantity: nextStock } : current);
-    setStockEdit(String(nextStock)); setError(''); await refreshIncomingDeliveries(); await loadMachineDetails({ ...selected, stock_quantity: nextStock });
+    setSaving(true); setError('');
+    const { data, error } = await supabase.rpc('receive_machine_incoming_delivery', {
+      p_delivery_id: delivery.id,
+      p_quantity: amount
+    });
+    if (error) {
+      setError('Leveransen kunde inte registreras som mottagen: ' + error.message);
+      setSaving(false);
+      return;
+    }
+    const completed = Boolean(data?.order_completed);
+    const isCustomerOrder = Boolean(delivery.sale_id);
+    await loadMachines();
+    await loadMachineDetails(selected, selectedReservationId);
+    setSaving(false);
+    let message;
+    if (isCustomerOrder && completed) {
+      message = `Mottagningen registrerad. Hela kundordern är nu komplett och bokförd som såld (${amount} st mottagna).`;
+    } else if (isCustomerOrder) {
+      message = `Mottagningen registrerad: ${amount} st. Kundordern väntar fortfarande på resterande antal.`;
+    } else {
+      const remaining = Math.max(0, Number(delivery.quantity || 0) - amount);
+      message = remaining > 0
+        ? `Mottagningen registrerad: ${amount} st. Lagret har fyllts på. ${remaining} st återstår på väg hem.`
+        : `Mottagningen registrerad: ${amount} st. Lagret har fyllts på.`;
+    }
+    alert(message);
   }
 
   async function saveReorderNeedQuantity(group) {
@@ -1352,17 +1474,12 @@ export default function App() {
     if (!group?.machine_id) return;
     const amount = Number.parseInt(reorderQuantityEdits[group.machine_id] ?? group.order_quantity, 10);
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange minst 1 produkt att beställa.'); return; }
-    if (!window.confirm(`Markera ${amount} st som beställda?`)) return;
+    if (!window.confirm(`Markera ${amount} st som beställda och flytta dem till På väg hem? De räknas inte som inlevererade förrän mottagningen registreras.`)) return;
     setSaving(true); setError('');
     const quantityResult = amount !== Number(group.order_quantity) ? await supabase.rpc('update_machine_reorder_group_quantity', { p_machine_id: group.machine_id, p_quantity: amount }) : { error: null };
     if (quantityResult.error) setError('Beställningsantalet kunde inte sparas: ' + quantityResult.error.message);
     else {
-      const openRows = group.rows.filter(row => Number(row.order_quantity || 0) > 0 || row.id === group.rows[0]?.id);
-      let markError = null;
-      for (const row of openRows) {
-        const { error } = await supabase.rpc('mark_machine_reorder_need_ordered', { p_need_id: row.id });
-        if (error && !markError) markError = error;
-      }
+      const { error: markError } = await supabase.rpc('mark_machine_reorder_group_ordered', { p_machine_id: group.machine_id });
       if (markError) setError('Beställningsbehovet kunde inte uppdateras: ' + markError.message);
       else { setReorderQuantityEdits(current => { const next = { ...current }; delete next[group.machine_id]; return next; }); await loadMachines(); }
     }
@@ -1421,10 +1538,11 @@ export default function App() {
     setError(''); setSaving(true);
     let result;
     if (reservationId === null) {
-      result = await supabase.rpc('record_machine_sale_with_restock', {
+      result = await supabase.rpc('record_machine_sale_with_restock_v2', {
         p_machine_id: selected.id, p_quantity: amount,
         p_customer_name: directSaleForm.customer_name.trim(),
         p_customer_phone: directSaleForm.customer_phone.trim(),
+        p_customer_order_number: directSaleForm.customer_order_number.trim(),
         p_customer_company: directSaleForm.customer_company.trim() || null,
         p_customer_email: directSaleForm.customer_email.trim() || null,
         p_sale_date: directSaleForm.sale_date || null,
@@ -1443,7 +1561,7 @@ export default function App() {
         setShowDirectSaleForm(false);
         setOverstockConfirmation(null);
         setOverstockConfirmed(false);
-        setDirectSaleForm({ customer_name: '', customer_phone: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
+        setDirectSaleForm({ customer_name: '', customer_phone: '', customer_order_number: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
       }
       await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected, selectedReservationId);
     }
@@ -1677,6 +1795,9 @@ export default function App() {
       .photo-lightbox-caption{position:absolute;bottom:14px;left:0;right:0;text-align:center;color:#ddd;font-size:13px}
       .machine-photo-item button{font-size:12px;padding:8px 6px}
       .inventory-controls{display:grid;gap:14px;margin-top:18px}
+      .inventory-controls .stock-order-button{background:#c62832!important;color:#fff!important;border:1px solid #ff5962!important;font-weight:800;letter-spacing:.02em;box-shadow:0 2px 8px rgba(198,40,50,.28)}
+      .inventory-controls .stock-order-button:hover{background:#e33440!important}
+      .inventory-controls .stock-order-button:focus-visible{outline:3px solid #fff;outline-offset:3px}
       .inventory-controls .quantity-control{display:grid;grid-template-columns:minmax(0,1fr) 112px;gap:10px 14px;align-items:center;padding:15px;background:#151515;border:1px solid #383838;border-radius:10px}
       .inventory-controls .quantity-heading{display:flex;flex-direction:column;gap:3px;min-width:0}
       .inventory-controls .quantity-heading strong{font-size:15px;color:#f2f2f2}
@@ -1914,14 +2035,17 @@ export default function App() {
           {releaseNotes.length === 0 ? <p className="muted">Inga versioner registrerade ännu.</p> : releaseNotes.map(note => <article className="history-item release-note-item" key={note.id}><div className="release-note-heading"><strong>{note.title}</strong><small>{new Date(note.release_date + 'T12:00:00').toLocaleDateString('sv-SE')}</small></div><p style={{whiteSpace:'pre-wrap'}}>{note.changes}</p></article>)}
         </div>
       </details></section>}</> : <>
-    <section className="hero"><div><p className="eyebrow">PRODUKTÖVERSIKT</p><h1>Produkter</h1><p className="muted">Hela MÖRE:s sortiment med lagerstatus, inkommande leveranser och försäljning.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till produkt</button></section>
-    <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök artikelnummer, produkt, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
+    <section className="hero"><div><p className="eyebrow">PRODUKTÖVERSIKT</p><h1>Produkter</h1><p className="muted">Hela MÖRE:s sortiment med lagerstatus, inkommande leveranser och försäljning.</p></div></section>
+    <div className="machine-search-intro"><strong>Hitta rätt produkt</strong><p>Sök på artikelnummer, produkt, fabrikat eller modell. Du kan söka på hela eller delar av artikelnumret eller namnet.</p></div>
+    <section className="toolbar machine-search-toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(search.trim()); }}><div className="search"><Search size={18} /><input placeholder="Sök artikelnummer, produkt, fabrikat eller modell…" aria-label="Sök produkter" value={search} onChange={e => setSearch(e.target.value)} /></div><button type="button" className="machine-search-clear" onClick={() => setSearch('')}>Rensa</button><button type="submit" className="primary machine-search-submit">Sök</button></form></section>
+
     <section className="stats">
       {[
         { value: 'all', label: 'Produkter', count: machines.length, Icon: Package },
         { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
         { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + displayedSoldQuantity(m), 0), Icon: CheckCircle2 },
-        { value: 'reorder', label: 'Produkter att beställa', count: groupedReorderNeeds.reduce((sum, n) => sum + Number(n.order_quantity || 0), 0), Icon: AlertCircle }
+        { value: 'pending', label: 'Väntande kundorder', count: pendingCustomerOrders.length, Icon: ClipboardList },
+        { value: 'reorder', label: 'Att beställa', count: groupedReorderNeeds.reduce((sum, n) => sum + Number(n.order_quantity || 0), 0), Icon: AlertCircle }
       ].map(({ value, label, count, Icon }) => (
         <div
           key={value}
@@ -1943,10 +2067,12 @@ export default function App() {
       ))}
     </section>
 
-    {filter === 'reorder' && <section className="detail-section reorder-overview"><h2>Produkter att beställa</h2><p className="muted">Beställningsbehov för samma produkt samlas här. Varje kundförsäljning visas separat så att kunduppgifterna följer med.</p>{groupedReorderNeeds.length === 0 ? <p className="empty">Det finns inga öppna beställningsbehov.</p> : <div className="reorder-needs-list">{groupedReorderNeeds.filter(group => !search.trim() || machines.some(m => m.id === group.machine_id && [m.machine_number,m.article_code,m.brand,m.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())))).map(group => { const machine = machines.find(m => m.id === group.machine_id); return <article className="reorder-need-card" key={group.machine_id}><div><strong>{machine ? [machine.brand,machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{machine?.article_code ? `Artikelkod ${machine.article_code}` : machine?.machine_number || 'Artikelnummer saknas'}</p><small>Sålda: {group.sold_quantity} st · Från lager: {group.stock_used} st · Saknas: {Math.max(0, Number(group.sold_quantity || 0) - Number(group.stock_used || 0) - Number(group.incoming_covered || 0))} st · På väg hem: {group.incoming_covered} st</small>{group.sales.length > 0 && <div className="reorder-customer-list"><strong>Kundförsäljningar</strong>{group.sales.map(sale => <div className="history-item sale-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><span className="sale-customer-label">KUNDUPPGIFTER</span><strong>{sale.customer_name || 'Kundnamn saknas'}{sale.status === 'reversed' ? ' · Återförd' : ''}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small>{sale.customer_company && <span>{sale.customer_company}</span>}{sale.customer_phone && <a href={'tel:' + sale.customer_phone}>{sale.customer_phone}</a>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}{sale.note && <p>{sale.note}</p>}</div>)}</div>}</div><div className="reorder-need-action"><div className="reorder-order-block"><strong className="reorder-order-heading">Att beställa:</strong><label className="reorder-quantity-label"><input aria-label="Att beställa antal" type="number" min="1" step="1" value={reorderQuantityEdits[group.machine_id] ?? group.order_quantity} onChange={e => setReorderQuantityEdits(current => ({ ...current, [group.machine_id]: e.target.value }))} /></label></div><button className="secondary" onClick={() => saveReorderNeedQuantity(group)} disabled={saving || Number(reorderQuantityEdits[group.machine_id] ?? group.order_quantity) === Number(group.order_quantity)}>Spara antal</button><button className="primary" onClick={() => markReorderNeedOrdered(group)} disabled={saving}>Markera beställda</button></div></article>; })}</div>}</section>}
+    {filter === 'pending' && <section className="detail-section reorder-overview"><h2>Väntande kundorder</h2><p className="muted">Här visas kundorder som väntar på att hela antalet ska finnas fysiskt hemma. De räknas inte som sålda förrän ordern kan slutföras i sin helhet.</p>{pendingCustomerOrders.filter(order => !search.trim() || [order.customer_order_number, order.customer_name, order.machine?.article_code, order.machine?.brand, order.machine?.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase()))).length === 0 ? <p className="empty">Det finns inga väntande kundorder.</p> : <div className="reorder-needs-list">{pendingCustomerOrders.filter(order => !search.trim() || [order.customer_order_number, order.customer_name, order.machine?.article_code, order.machine?.brand, order.machine?.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase()))).map(order => <article className="reorder-need-card" key={order.id}><div><strong>{order.machine ? [order.machine.brand, order.machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{order.machine?.article_code ? `Artikelkod ${order.machine.article_code}` : 'Artikelkod saknas'}</p><div className="reorder-customer-card"><div className="reorder-customer-main"><strong>{order.customer_name || 'Kundnamn saknas'}</strong>{order.customer_phone && <a href={'tel:' + order.customer_phone}>{order.customer_phone}</a>}</div><div className="reorder-customer-order"><span>Kundens ordernummer</span><strong>{order.customer_order_number || 'Saknas'}</strong><small>{order.quantity} st · {date(order.sale_date)}</small></div>{order.customer_company && <small>{order.customer_company}</small>}{order.customer_email && <a href={'mailto:' + order.customer_email}>{order.customer_email}</a>}</div><p className="muted">Reserverat från lager: {order.stock_used} st · Inkommande tilldelat: {order.incoming_covered} st · Ytterligare att beställa: {order.order_quantity} st</p><span className="pending-order-status">Väntar på komplett leverans</span></div></article>)}</div>}</section>}
+
+    {filter === 'reorder' && <section className="detail-section reorder-overview"><h2>Att beställa</h2><p className="muted">Beställningsbehov för samma produkt samlas här. Varje kundförsäljning visas separat så att kunduppgifterna följer med.</p>{groupedReorderNeeds.length === 0 ? <p className="empty">Det finns inga öppna beställningsbehov.</p> : <div className="reorder-needs-list">{groupedReorderNeeds.filter(group => !search.trim() || machines.some(m => m.id === group.machine_id && [m.machine_number,m.article_code,m.brand,m.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())))).map(group => { const machine = machines.find(m => m.id === group.machine_id); return <article className="reorder-need-card" key={group.machine_id}><div><strong>{machine ? [machine.brand,machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{machine?.article_code ? `Artikelkod ${machine.article_code}` : machine?.machine_number || 'Artikelnummer saknas'}</p><small>Sålda: {group.sold_quantity} st · Från lager: {group.stock_used} st · Saknas: {Math.max(0, Number(group.sold_quantity || 0) - Number(group.stock_used || 0) - Number(group.incoming_covered || 0))} st · På väg hem: {group.incoming_covered} st</small>{group.sales.length > 0 && <div className="reorder-customer-list"><strong>Kundförsäljningar</strong>{group.sales.map(sale => <div className="reorder-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><div className="reorder-customer-main"><strong>{sale.customer_name || 'Kundnamn saknas'}{sale.status === 'reversed' ? ' · Återförd' : ''}</strong>{sale.customer_phone && <a href={'tel:' + sale.customer_phone}>{sale.customer_phone}</a>}</div><div className="reorder-customer-order"><span>Kundens ordernummer</span><strong>{sale.customer_order_number || 'Saknas – äldre försäljning'}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small></div>{sale.customer_company && <small>{sale.customer_company}</small>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}</div>)}</div>}</div><div className="reorder-need-action"><div className="reorder-order-block"><strong className="reorder-order-heading">Att beställa:</strong><label className="reorder-quantity-label"><input aria-label="Att beställa antal" type="number" min="1" step="1" value={reorderQuantityEdits[group.machine_id] ?? group.order_quantity} onChange={e => setReorderQuantityEdits(current => ({ ...current, [group.machine_id]: e.target.value }))} /></label></div><button className="secondary" onClick={() => saveReorderNeedQuantity(group)} disabled={saving || Number(reorderQuantityEdits[group.machine_id] ?? group.order_quantity) === Number(group.order_quantity)}>Spara antal</button><button className="primary" onClick={() => markReorderNeedOrdered(group)} disabled={saving}>Beställ · flytta till På väg hem</button></div></article>; })}</div>}</section>}
 
     {error && <div className="error-banner">{error}</div>}
-    {filter === 'reorder' || (filter === 'overview' && !search.trim()) ? null : loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>{filter === 'reorder' ? 'Inga produkter att beställa' : 'Inga produkter att visa'}</h3><p>{filter === 'reorder' ? 'Det finns inga öppna beställningsbehov just nu.' : 'Prova att ändra sökning eller filter, eller lägg till en produkt.'}</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (availableStock(machine) > 0 ? 'in_stock' : Number(machine.incoming_quantity || 0) > 0 ? 'incoming' : 'out_of_stock')}>{availableStock(machine) > 0 ? `${availableStock(machine)} st i lager` : Number(machine.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(machine.incoming_quantity)} st på väg hem` : 'Slut i lager'}</span></div><div className="machine-info"><p className="machine-no">{machine.article_code ? `Artikelkod ${machine.article_code}` : (machine.machine_number || 'Inget artikelnummer')}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Produkt'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{availableStock(machine)}</strong><small>Lager</small></span><span><strong>{displayedSoldQuantity(machine)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong></div></button>)}</section>}
+    {filter === 'reorder' || (filter === 'overview' && !search.trim()) ? null : loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>{filter === 'reorder' ? 'Inget att beställa' : 'Inga produkter att visa'}</h3><p>{filter === 'reorder' ? 'Det finns inga öppna beställningsbehov just nu.' : 'Prova att ändra sökning eller filter, eller lägg till en produkt.'}</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (availableStock(machine) > 0 ? 'in_stock' : Number(machine.incoming_quantity || 0) > 0 ? 'incoming' : 'out_of_stock')}>{availableStock(machine) > 0 ? `${availableStock(machine)} st i lager` : Number(machine.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(machine.incoming_quantity)} st på väg hem` : 'Slut i lager'}</span></div><div className="machine-info"><p className="machine-no">{machine.article_code ? `Artikelkod ${machine.article_code}` : (machine.machine_number || 'Inget artikelnummer')}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Produkt'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{availableStock(machine)}</strong><small>Lager</small></span><span><strong>{displayedSoldQuantity(machine)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong></div></button>)}</section>}
 
     {selected && <div className="overlay" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); setShowSalesHistory(false); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); setShowSalesHistory(false); }}><X /></button><p className="eyebrow">PRODUKTDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.article_code ? `Artikelkod ${selected.article_code}` : (selected.machine_number || 'Artikelkod saknas')}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong><p className="muted">Lagerstatus: <strong>{availableStock(selected) > 0 ? `Finns i lager · ${availableStock(selected)} st` : Number(selected.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(selected.incoming_quantity)} st på väg hem` : 'Slut i lager'}</strong></p>
       <div className="dialog-actions"><button type="button" className="secondary-action" onClick={openEditMachine}>Redigera maskinuppgifter</button></div>
@@ -1981,11 +2107,11 @@ export default function App() {
         </>
       </div>}
       {!isSoldContext && (
-      <div className="detail-section inventory-controls"><h3>{filter === 'incoming' ? 'Inkommande leveranser' : 'Lager och leveranser'}</h3>{filter !== 'incoming' && <div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div>}{incomingDeliveries.length > 0 && <div className="quantity-control incoming-deliveries-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}><div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span className="incoming-eta-value">{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span><button type="button" className="text-button edit-eta-button" onClick={() => setEditingDeliveryEtaId(current => current === delivery.id ? null : delivery.id)}>{editingDeliveryEtaId === delivery.id ? 'Avbryt' : 'Ändra ETA'}</button><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div>{editingDeliveryEtaId === delivery.id && <div className="delivery-eta-edit"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ändring</button></div>}{filter === 'incoming' && <div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button className="primary" onClick={() => receiveIncomingDelivery(delivery)}>Registrera mottaget</button></div>}</div>)}</div>}{displayedSoldQuantity(selected) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {displayedSoldQuantity(selected)} st</p>}
+      <div className="detail-section inventory-controls"><h3>{filter === 'incoming' ? 'Inkommande leveranser' : 'Lager och leveranser'}</h3>{filter !== 'incoming' && <div className="dialog-actions"><button type="button" className="primary stock-order-button" onClick={() => { setStockOrderDeliveries([emptyDelivery()]); setError(''); setShowStockOrder(true); }}>Beställning</button></div>}{filter !== 'incoming' && <div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div>}{incomingDeliveries.length > 0 && <div className="quantity-control incoming-deliveries-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}>{delivery.sale_id && (() => { const customer = incomingDeliverySales.find(item => item.id === delivery.sale_id); return customer ? <div className="incoming-customer-card"><strong>{customer.customer_name || 'Kundnamn saknas'}</strong><span>Kundens ordernummer: <strong>{customer.customer_order_number || 'Saknas – äldre försäljning'}</strong></span>{customer.customer_phone && <a href={'tel:' + customer.customer_phone}>{customer.customer_phone}</a>}{customer.customer_company && <small>{customer.customer_company}</small>}{customer.customer_email && <a href={'mailto:' + customer.customer_email}>{customer.customer_email}</a>}</div> : <p className="muted incoming-customer-missing">Kunduppgifter saknas för denna leverans</p>; })()}<div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span className="incoming-eta-value">{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span>{delivery.is_stock_replenishment && <span className="incoming-stock-tag">Lagerpåfyllning</span>}<button type="button" className="text-button edit-eta-button" onClick={() => setEditingDeliveryEtaId(current => current === delivery.id ? null : delivery.id)}>{editingDeliveryEtaId === delivery.id ? 'Avbryt' : 'Ändra ETA'}</button><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div>{editingDeliveryEtaId === delivery.id && <div className="delivery-eta-edit"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ändring</button></div>}{filter === 'incoming' && <div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button type="button" className="primary" onClick={() => receiveIncomingDelivery(delivery)} disabled={saving}>{saving ? 'Registrerar…' : 'Registrera mottaget'}</button></div>}</div>)}</div>}{displayedSoldQuantity(selected) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {displayedSoldQuantity(selected)} st</p>}
 
       </div>
       )}
-      {isSoldContext && displayedSoldQuantity(selected) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{displayedSoldQuantity(selected)} st</strong></p><div className="machine-sales-list"><button type="button" className="admin-refresh-button" onClick={() => setShowSalesHistory(value => !value)}><History size={16} /> {showSalesHistory ? 'Dölj försäljningshistorik' : `Visa försäljningshistorik (${machineSales.length})`}</button>{showSalesHistory && <><h4>Försäljningsuppgifter</h4>{machineSales.length === 0 ? <p className="muted">Inga kunduppgifter registrerade för försäljningen.</p> : machineSales.map(sale => <div className="history-item sale-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><span className="sale-customer-label">KUNDUPPGIFTER</span><strong>{sale.customer_name || 'Kundnamn saknas'} {sale.status === 'reversed' ? '· Återförd' : ''}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small>{sale.customer_company && <span>{sale.customer_company}</span>}{sale.customer_phone && <a href={'tel:' + sale.customer_phone} style={{ color: 'inherit', textDecoration: 'none' }}>{sale.customer_phone}</a>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}{sale.note && <p>{sale.note}</p>}</div>)}</>}</div>{Number(selected.sold_quantity || 0) > 0 && <button onClick={restoreSoldMachine} disabled={saving}>Ångra fakturerad försäljning – återför 1 till lagret</button>}</section>}
+      {isSoldContext && displayedSoldQuantity(selected) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{displayedSoldQuantity(selected)} st</strong></p><div className="machine-sales-list"><button type="button" className="admin-refresh-button" onClick={() => setShowSalesHistory(value => !value)}><History size={16} /> {showSalesHistory ? 'Dölj försäljningshistorik' : `Visa försäljningshistorik (${machineSales.length})`}</button>{showSalesHistory && <><h4>Försäljningsuppgifter</h4>{machineSales.length === 0 ? <p className="muted">Inga kunduppgifter registrerade för försäljningen.</p> : machineSales.map(sale => <div className="history-item sale-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><span className="sale-customer-label">KUNDUPPGIFTER</span><strong>{sale.customer_name || 'Kundnamn saknas'} {sale.status === 'reversed' ? '· Återförd' : ''}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small><small>Kundens ordernummer: <strong>{sale.customer_order_number || 'Saknas – äldre försäljning'}</strong></small>{sale.customer_company && <span>{sale.customer_company}</span>}{sale.customer_phone && <a href={'tel:' + sale.customer_phone} style={{ color: 'inherit', textDecoration: 'none' }}>{sale.customer_phone}</a>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}{sale.note && <p>{sale.note}</p>}</div>)}</>}</div>{Number(selected.sold_quantity || 0) > 0 && <button onClick={restoreSoldMachine} disabled={saving}>Ångra fakturerad försäljning – återför 1 till lagret</button>}</section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
       <div className="detail-section"><button type="button" className="admin-refresh-button" onClick={() => setShowMachineHistory(value => !value)}><History size={18} /> {showMachineHistory ? 'Dölj historik' : 'Visa historik'}</button>{showMachineHistory && <div className="machine-history-list"><h3>Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
@@ -2002,9 +2128,12 @@ export default function App() {
       <button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
 
+    {showStockOrder && selected && <div className="overlay" onClick={() => !saving && setShowStockOrder(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setShowStockOrder(false)} disabled={saving}><X /></button><p className="eyebrow">LAGERPÅFYLLNING</p><h2>Beställ produkt</h2><p className="muted">{selected.brand} {selected.model} · {selected.article_code ? `Artikelkod ${selected.article_code}` : selected.machine_number || 'Artikelkod saknas'}</p><form className="machine-form" onSubmit={createStockReplenishmentOrder}><div className="full"><strong>Leveranser och ETA</strong><p className="muted">Dela upp beställningen om maskinerna kommer vid olika tidpunkter. Varje rad får ett eget antal och ETA.</p></div>{stockOrderDeliveries.map((delivery, index) => <div className="full delivery-editor" key={index}><div className="delivery-add-fields"><label>Antal<input type="number" min="1" step="1" value={delivery.quantity} onChange={e => setStockOrderDeliveries(rows => rows.map((row, i) => i === index ? { ...row, quantity: e.target.value } : row))} required /></label><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year} onChange={e => setStockOrderDeliveries(rows => rows.map((row, i) => i === index ? { ...row, eta_year: e.target.value } : row))} required /></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week} onChange={e => setStockOrderDeliveries(rows => rows.map((row, i) => i === index ? { ...row, eta_week: e.target.value } : row))} required /></label></div>{stockOrderDeliveries.length > 1 && <button type="button" className="text-button" onClick={() => setStockOrderDeliveries(rows => rows.filter((_, i) => i !== index))}>Ta bort leveransrad</button>}</div>)}<button type="button" className="secondary-action full" onClick={() => setStockOrderDeliveries(rows => [...rows, emptyDelivery()])}>+ Lägg till leverans med eget ETA</button><p className="muted full">Beställningen kopplas till den befintliga produkten och registreras som lagerpåfyllning. Lagret ökar först när respektive leverans tas emot. Ingen kundorder eller försäljning skapas.</p>{error && <p className="error full">{error}</p>}<button className="primary wide" disabled={saving}>{saving ? 'Registrerar beställning…' : 'Registrera beställning'}</button></form></section></div>}
+
     {showDirectSaleForm && selected && <div className="overlay" onClick={() => { if (!saving) { setShowDirectSaleForm(false); setOverstockConfirmed(false); } }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setShowDirectSaleForm(false); setOverstockConfirmed(false); }} disabled={saving}><X /></button><p className="eyebrow">REGISTRERA FÖRSÄLJNING</p><h2>Kunduppgifter</h2><p className="muted">{selected.brand} {selected.model} · {saleQuantity} st</p><form className="machine-form" onSubmit={e => { e.preventDefault(); markSold(null, overstockConfirmed); }}>
       <label className="full">Kundens namn<input value={directSaleForm.customer_name} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_name: e.target.value })} required placeholder="Ange kundens namn" /></label>
       <label className="full">Telefonnummer<input type="tel" value={directSaleForm.customer_phone} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_phone: e.target.value })} required placeholder="Ange telefonnummer" /></label>
+      <label className="full">Kundens ordernummer<input value={directSaleForm.customer_order_number} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_order_number: e.target.value })} required placeholder="Ange kundens ordernummer" /></label>
       <label className="full">Företag (valfritt)<input value={directSaleForm.customer_company} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_company: e.target.value })} /></label>
       <label className="full">E-post (valfritt)<input type="email" value={directSaleForm.customer_email} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_email: e.target.value })} /></label>
       <label className="full">Försäljningsdatum<input type="date" value={directSaleForm.sale_date} onChange={e => setDirectSaleForm({ ...directSaleForm, sale_date: e.target.value })} required /></label>
@@ -2036,7 +2165,20 @@ export default function App() {
       <div className="form-section"><h3>Beskrivning</h3><label className="full">Information om maskinen<textarea rows={4} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Beskriv skick, utrustning och annan relevant information…" /></label></div>
       <button className="primary wide">Spara maskin</button></form></section></div>}
     </>}
-  <style>{`.reorder-overview{margin-top:18px}.reorder-needs-list{display:flex;flex-direction:column;gap:10px}.reorder-need-card{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px;border:1px solid #454545;border-radius:12px;background:#202020}.reorder-need-card p{margin:4px 0}.reorder-need-action{display:flex;flex-direction:column;align-items:flex-end;gap:8px;white-space:nowrap}.reorder-need-action>strong{font-size:22px}.reorder-order-block{display:flex;flex-direction:column;gap:7px;align-items:stretch;width:100%}.reorder-order-heading{font-size:16px;color:#fff}.reorder-quantity-label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:#aaa}.reorder-quantity-label input{width:110px;max-width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid #555;border-radius:8px;background:#151515;color:#fff;font-size:18px;font-weight:700}.reorder-need-action .secondary{min-height:40px;padding:8px 12px;border:1px solid #555;border-radius:8px;background:#303030;color:#fff}.reorder-need-action button{min-height:40px}@media(max-width:520px){.reorder-need-card{align-items:flex-start;flex-direction:column}.reorder-need-action{width:100%;align-items:stretch}.reorder-need-action button{width:100%}.reorder-quantity-label input{width:100%}}.delivery-editor{display:flex;flex-direction:column;gap:10px}.delivery-add-fields{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.delivery-row,.incoming-delivery-title,.receive-delivery-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.delivery-row,.incoming-delivery-card{padding:10px;border:1px solid #3b3b3b;border-radius:10px;margin-top:8px}.incoming-delivery-card{display:flex;flex-direction:column;gap:10px}.incoming-delivery-title .incoming-eta-value{color:#fff;font-weight:600}.incoming-delivery-title .edit-eta-button{white-space:nowrap;font-size:14px;font-weight:700;color:#fff;background:#8f2525;border:1px solid #e02b32;border-radius:8px;padding:9px 12px;min-height:40px}.delivery-eta-edit{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}.delivery-eta-edit label{display:flex;flex-direction:column;gap:6px;min-width:0}.delivery-eta-edit input{width:100%;min-width:0;box-sizing:border-box}.delivery-eta-edit button{grid-column:1/-1;min-height:42px}.receive-delivery-row label{flex:1}.receive-delivery-row input{width:100%}.icon-button{background:transparent;border:0;color:#aaa;padding:6px}.text-button{background:transparent;border:0;color:#e02b32;padding:4px}.inventory-controls .incoming-deliveries-control{grid-template-columns:minmax(0,1fr);align-items:stretch}.incoming-deliveries-control>*{grid-column:1/-1;min-width:0}.incoming-delivery-card{width:100%;min-width:0;box-sizing:border-box}.delivery-add-fields{grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}.delivery-add-fields label{display:flex;flex-direction:column;gap:6px;min-width:0;overflow-wrap:anywhere}.delivery-add-fields input,.receive-delivery-row input{width:100%;min-width:0;box-sizing:border-box}.incoming-delivery-card>button,.delivery-editor>button{width:100%;min-height:44px}.receive-delivery-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.receive-delivery-row label{min-width:0}.receive-delivery-row .primary{width:100%;min-height:46px}@media(max-width:520px){.inventory-controls .incoming-deliveries-control{grid-template-columns:minmax(0,1fr);padding:12px}.incoming-delivery-card{padding:12px}.incoming-delivery-title{justify-content:flex-start;flex-wrap:wrap}.incoming-delivery-title .incoming-eta-value{font-size:16px}.incoming-delivery-title .edit-eta-button{margin-left:auto;flex:0 0 auto}.incoming-delivery-title strong{white-space:nowrap}.delivery-add-fields{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.delivery-add-fields label{font-size:13px}.delivery-add-fields input{font-size:16px;padding:10px 7px}.receive-delivery-row{grid-template-columns:minmax(0,1fr)}}`}</style>
+  <style>{`.machine-search-intro{margin:18px 0 9px;color:#f1f1f1}.machine-search-intro strong{display:block;font-size:16px}.machine-search-intro p{margin:4px 0 0;color:#aaa;font-size:13px;line-height:1.45}.machine-search-toolbar{margin:0 0 18px}.machine-search-form{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:stretch;width:100%}.machine-search-form .search{min-width:0}.machine-search-form .search input{width:100%;min-width:0}.machine-search-clear,.machine-search-submit{min-height:46px;padding:10px 16px;border-radius:9px;font-weight:700;white-space:nowrap}.machine-search-clear{border:1px solid #555;background:#242424;color:#eee}.machine-search-submit{min-width:82px}.incoming-customer-card{order:0;margin:0 0 4px;padding:12px 14px}.incoming-delivery-title{order:1}@media(max-width:520px){.machine-search-form{grid-template-columns:minmax(0,1fr) auto auto;gap:6px}.machine-search-clear,.machine-search-submit{padding:9px 11px;font-size:13px;min-height:44px}.machine-search-form .search input{font-size:15px}.incoming-customer-card{margin-bottom:4px}}
+.reorder-overview{margin-top:18px}.reorder-needs-list{display:flex;flex-direction:column;gap:10px}.reorder-customer-list{display:flex;flex-direction:column;gap:7px;margin-top:10px}.reorder-customer-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,auto);gap:5px 14px;padding:9px 11px;border:1px solid #3d3d3d;border-radius:9px;background:#191919}.reorder-customer-main{display:flex;flex-direction:column;gap:3px;min-width:0}.reorder-customer-main a{color:inherit;text-decoration:none;font-size:13px}.reorder-customer-order{display:flex;flex-direction:column;gap:2px;text-align:right}.reorder-customer-order span{font-size:10px;letter-spacing:.04em;color:#aaa;text-transform:uppercase}.reorder-customer-order strong{font-size:14px}.reorder-customer-order small,.reorder-customer-card>small,.reorder-customer-card>a{font-size:12px;color:#aaa}.reorder-customer-card>small,.reorder-customer-card>a{grid-column:1/-1}.reorder-need-card{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px;border:1px solid #454545;border-radius:12px;background:#202020}.reorder-need-card p{margin:4px 0}.reorder-need-action{display:flex;flex-direction:column;align-items:flex-end;gap:8px;white-space:nowrap}.reorder-need-action>strong{font-size:22px}.reorder-order-block{display:flex;flex-direction:column;gap:7px;align-items:stretch;width:100%}.reorder-order-heading{font-size:16px;color:#fff}.reorder-quantity-label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:#aaa}.reorder-quantity-label input{width:110px;max-width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid #555;border-radius:8px;background:#151515;color:#fff;font-size:18px;font-weight:700}.reorder-need-action .secondary{min-height:40px;padding:8px 12px;border:1px solid #555;border-radius:8px;background:#303030;color:#fff}.reorder-need-action button{min-height:40px}@media(max-width:520px){.reorder-customer-card{grid-template-columns:minmax(0,1fr);gap:6px}.reorder-customer-order{text-align:left}.reorder-need-card{align-items:flex-start;flex-direction:column}.reorder-need-action{width:100%;align-items:stretch}.reorder-need-action button{width:100%}.reorder-quantity-label input{width:100%}}.delivery-editor{display:flex;flex-direction:column;gap:10px}.delivery-add-fields{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.delivery-row,.incoming-delivery-title,.receive-delivery-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.delivery-row,.incoming-delivery-card{padding:10px;border:1px solid #3b3b3b;border-radius:10px;margin-top:8px}.incoming-delivery-card{display:flex;flex-direction:column;gap:10px}.incoming-delivery-title .incoming-eta-value{color:#fff;font-weight:600}.incoming-delivery-title .edit-eta-button{white-space:nowrap;font-size:14px;font-weight:700;color:#fff;background:#8f2525;border:1px solid #e02b32;border-radius:8px;padding:9px 12px;min-height:40px}.delivery-eta-edit{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}.delivery-eta-edit label{display:flex;flex-direction:column;gap:6px;min-width:0}.delivery-eta-edit input{width:100%;min-width:0;box-sizing:border-box}.delivery-eta-edit button{grid-column:1/-1;min-height:42px}.receive-delivery-row label{flex:1}.receive-delivery-row input{width:100%}.icon-button{background:transparent;border:0;color:#aaa;padding:6px}.text-button{background:transparent;border:0;color:#e02b32;padding:4px}.inventory-controls .incoming-deliveries-control{grid-template-columns:minmax(0,1fr);align-items:stretch}.incoming-deliveries-control>*{grid-column:1/-1;min-width:0}.incoming-delivery-card{width:100%;min-width:0;box-sizing:border-box}.delivery-add-fields{grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}.delivery-add-fields label{display:flex;flex-direction:column;gap:6px;min-width:0;overflow-wrap:anywhere}.delivery-add-fields input,.receive-delivery-row input{width:100%;min-width:0;box-sizing:border-box}.incoming-delivery-card>button,.delivery-editor>button{width:100%;min-height:44px}.receive-delivery-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.receive-delivery-row label{min-width:0}.receive-delivery-row .primary{width:100%;min-height:46px}@media(max-width:520px){.inventory-controls .incoming-deliveries-control{grid-template-columns:minmax(0,1fr);padding:12px}.incoming-delivery-card{padding:12px}.incoming-delivery-title{justify-content:flex-start;flex-wrap:wrap}.incoming-delivery-title .incoming-eta-value{font-size:16px}.incoming-delivery-title .edit-eta-button{margin-left:auto;flex:0 0 auto}.incoming-delivery-title strong{white-space:nowrap}.delivery-add-fields{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.delivery-add-fields label{font-size:13px}.delivery-add-fields input{font-size:16px;padding:10px 7px}.receive-delivery-row{grid-template-columns:minmax(0,1fr)}}.incoming-customer-card{display:flex;flex-direction:column;gap:3px;padding:10px 12px;margin:8px 0;border:1px solid var(--border,#444);border-radius:10px;background:rgba(128,128,128,.07);font-size:13px}.incoming-customer-card a{color:inherit;text-decoration:none}.incoming-customer-card span{font-size:12px}.incoming-stock-tag{font-size:11px;padding:3px 7px;border-radius:6px;background:rgba(128,128,128,.14)}.incoming-customer-missing{font-size:12px;margin:6px 0}
+@media(max-width:520px){
+  .app-shell .main-tabs{gap:6px;padding:7px 0 10px}.app-shell .main-tabs button{padding:8px 6px;font-size:12px}
+  .home-quick-overview{margin:7px 0 10px}.home-quick-toggle{padding:4px 0}.home-quick-heading{margin-bottom:2px}
+  .home-notices{margin:0 0 12px;padding-bottom:0}.home-notices-head{margin-bottom:6px;padding:8px 10px}.home-notices-head h2{font-size:12px}.home-notices-head h2 svg{width:16px;height:16px}
+  .home-notice-card{padding:9px 11px;margin:6px 0;border-left-width:4px}.home-notice-card h3{margin:5px 0 3px;font-size:14px}.home-notice-card p{font-size:12px;line-height:1.35}.home-notice-meta{font-size:9px}.home-notice-actions{gap:6px;margin-top:6px}.home-notice-actions button{min-height:34px;padding:6px 10px;font-size:12px}
+  .app-shell .hero{margin:10px 0 7px;gap:8px}.app-shell .hero .eyebrow{margin:0 0 3px;font-size:10px}.app-shell .hero h1{margin:0 0 4px;font-size:30px;line-height:1.1}.app-shell .hero .muted{margin:0;font-size:12px;line-height:1.35}
+  .machine-search-intro{margin:9px 0 6px}.machine-search-intro strong{font-size:14px}.machine-search-intro p{margin-top:2px;font-size:11px;line-height:1.3}
+  .machine-search-toolbar{margin-bottom:10px}.machine-search-clear,.machine-search-submit{min-height:40px;padding:7px 10px}
+  .app-shell .stats{gap:6px}.app-shell .stats>div{min-height:68px;padding:9px 11px;gap:7px}.app-shell .stats>div svg{width:22px;height:22px}.app-shell .stats>div strong{font-size:22px;line-height:1}.app-shell .stats>div span{font-size:10px;line-height:1.2}
+}
+`}</style>
   </main>;
 }
+
 
