@@ -924,9 +924,19 @@ export default function App() {
   useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); loadPrivateConversations(); loadReservations(true); loadHomeNotices(); } }, [session?.user?.id]);
 
   const filtered = useMemo(() => machines.filter(m => {
-    const q = search.toLowerCase();
-    const matches = [m.article_code, m.machine_number, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
-    return matches && (filter === 'all' || (filter === 'sold' ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? Number(m.reserved_quantity || 0) > 0 : filter === 'in_stock' ? Number(m.available_quantity ?? m.stock_quantity ?? 1) > 0 : m.status === filter));
+    const q = search.trim().toLocaleLowerCase('sv');
+    const matches = !q || [m.article_code, m.machine_number, m.brand, m.model].some(v => String(v ?? '').toLocaleLowerCase('sv').includes(q));
+    // Översiktsläget är inte en maskinstatus: sökning där ska omfatta alla maskiner.
+    const matchesFilter = filter === 'overview' || filter === 'all' || (filter === 'sold'
+      ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold'
+      : filter === 'incoming'
+        ? Number(m.incoming_quantity || 0) > 0
+        : filter === 'reserved'
+          ? Number(m.reserved_quantity || 0) > 0
+          : filter === 'in_stock'
+            ? Number(m.available_quantity ?? m.stock_quantity ?? 1) > 0
+            : m.status === filter);
+    return matches && matchesFilter;
   }), [machines, search, filter]);
 
   async function signIn(event) {
