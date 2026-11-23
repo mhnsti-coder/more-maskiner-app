@@ -901,7 +901,7 @@ export default function App() {
     const q = search.toLowerCase();
     const matches = [m.machine_number, m.article_code, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
     const hasOpenReorder = groupedReorderNeeds.some(n => n.machine_id === m.id);
-    return matches && (filter === 'all' || (filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
+    return matches && (filter === 'all' || filter === 'overview' || (filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
   }), [machines, groupedReorderNeeds, search, filter]);
 
   async function signIn(event) {
@@ -1342,14 +1342,27 @@ export default function App() {
     if (!selected) return;
     const amount = Number.parseInt(receiveDeliveryAmounts[delivery.id] || String(delivery.quantity), 10);
     if (!Number.isInteger(amount) || amount < 1 || amount > Number(delivery.quantity)) { setError(`Ange ett antal mellan 1 och ${delivery.quantity}.`); return; }
+    const isCustomerDelivery = Boolean(delivery.sale_id);
     const remaining = Number(delivery.quantity) - amount;
     const deliveryResult = remaining > 0
       ? await supabase.from('machine_incoming_deliveries').update({ quantity: remaining }).eq('id', delivery.id)
       : await supabase.from('machine_incoming_deliveries').delete().eq('id', delivery.id);
     if (deliveryResult.error) { setError('Leveransen kunde inte registreras som mottagen: ' + deliveryResult.error.message); return; }
-    const nextStock = Math.max(0, Number(selected.stock_quantity ?? 0)) + amount;
-    const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: 'in_stock' }).eq('id', selected.id);
-    if (error) { setError('Leveransen markerades, men lagersaldot kunde inte uppdateras: ' + error.message); return; }
+
+    // Customer-linked deliveries are already counted as sold when the sale is registered.
+    // Receiving them fulfils the customer order; it must not add stock or count another sale.
+    const currentStock = Math.max(0, Number(selected.stock_quantity ?? 0));
+    const nextStock = isCustomerDelivery ? currentStock : currentStock + amount;
+    if (!isCustomerDelivery) {
+      const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: 'in_stock' }).eq('id', selected.id);
+      if (error) { setError('Leveransen markerades, men lagersaldot kunde inte uppdateras: ' + error.message); return; }
+    }
+    await supabase.from('machine_history').insert({
+      machine_id: selected.id,
+      user_id: session?.user?.id,
+      action: isCustomerDelivery ? 'Kundleverans mottagen' : 'Lagerpåfyllning mottagen',
+      new_data: { delivery_id: delivery.id, sale_id: delivery.sale_id || null, quantity: amount, remaining_quantity: remaining }
+    });
     setSelected(current => current?.id === selected.id ? { ...current, stock_quantity: nextStock } : current);
     setStockEdit(String(nextStock)); setError(''); await refreshIncomingDeliveries(); await loadMachineDetails({ ...selected, stock_quantity: nextStock });
   }
@@ -1928,6 +1941,9 @@ export default function App() {
         </div>
       </details></section>}</> : <>
     <section className="hero"><div><p className="eyebrow">PRODUKTÖVERSIKT</p><h1>Produkter</h1><p className="muted">Hela MÖRE:s sortiment med lagerstatus, inkommande leveranser och försäljning.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till produkt</button></section>
+    <div className="machine-search-intro"><strong>Hitta rätt produkt</strong><p>Sök på artikelnummer, produkt, fabrikat eller modell. Du kan söka på hela eller delar av artikelnumret eller namnet.</p></div>
+    <section className="toolbar machine-search-toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(search.trim()); }}><div className="search"><Search size={18} /><input placeholder="Sök artikelnummer, produkt, fabrikat eller modell…" aria-label="Sök produkter" value={search} onChange={e => setSearch(e.target.value)} /></div><button type="button" className="machine-search-clear" onClick={() => setSearch('')}>Rensa</button><button type="submit" className="primary machine-search-submit">Sök</button></form></section>
+
     <section className="stats">
       {[
         { value: 'all', label: 'Produkter', count: machines.length, Icon: Package },
@@ -1954,9 +1970,6 @@ export default function App() {
         </div>
       ))}
     </section>
-
-    <div className="machine-search-intro"><strong>Hitta rätt produkt</strong><p>Sök på artikelnummer, produkt, fabrikat eller modell. Du kan söka på hela eller delar av artikelnumret eller namnet.</p></div>
-    <section className="toolbar machine-search-toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(search.trim()); }}><div className="search"><Search size={18} /><input placeholder="Sök artikelnummer, produkt, fabrikat eller modell…" aria-label="Sök produkter" value={search} onChange={e => setSearch(e.target.value)} /></div><button type="button" className="machine-search-clear" onClick={() => setSearch('')}>Rensa</button><button type="submit" className="primary machine-search-submit">Sök</button></form></section>
 
     {filter === 'reorder' && <section className="detail-section reorder-overview"><h2>Produkter att beställa</h2><p className="muted">Beställningsbehov för samma produkt samlas här. Varje kundförsäljning visas separat så att kunduppgifterna följer med.</p>{groupedReorderNeeds.length === 0 ? <p className="empty">Det finns inga öppna beställningsbehov.</p> : <div className="reorder-needs-list">{groupedReorderNeeds.filter(group => !search.trim() || machines.some(m => m.id === group.machine_id && [m.machine_number,m.article_code,m.brand,m.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())))).map(group => { const machine = machines.find(m => m.id === group.machine_id); return <article className="reorder-need-card" key={group.machine_id}><div><strong>{machine ? [machine.brand,machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{machine?.article_code ? `Artikelkod ${machine.article_code}` : machine?.machine_number || 'Artikelnummer saknas'}</p><small>Sålda: {group.sold_quantity} st · Från lager: {group.stock_used} st · Saknas: {Math.max(0, Number(group.sold_quantity || 0) - Number(group.stock_used || 0) - Number(group.incoming_covered || 0))} st · På väg hem: {group.incoming_covered} st</small>{group.sales.length > 0 && <div className="reorder-customer-list"><strong>Kundförsäljningar</strong>{group.sales.map(sale => <div className="reorder-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><div className="reorder-customer-main"><strong>{sale.customer_name || 'Kundnamn saknas'}{sale.status === 'reversed' ? ' · Återförd' : ''}</strong>{sale.customer_phone && <a href={'tel:' + sale.customer_phone}>{sale.customer_phone}</a>}</div><div className="reorder-customer-order"><span>Kundens ordernummer</span><strong>{sale.customer_order_number || 'Saknas – äldre försäljning'}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small></div>{sale.customer_company && <small>{sale.customer_company}</small>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}</div>)}</div>}</div><div className="reorder-need-action"><div className="reorder-order-block"><strong className="reorder-order-heading">Att beställa:</strong><label className="reorder-quantity-label"><input aria-label="Att beställa antal" type="number" min="1" step="1" value={reorderQuantityEdits[group.machine_id] ?? group.order_quantity} onChange={e => setReorderQuantityEdits(current => ({ ...current, [group.machine_id]: e.target.value }))} /></label></div><button className="secondary" onClick={() => saveReorderNeedQuantity(group)} disabled={saving || Number(reorderQuantityEdits[group.machine_id] ?? group.order_quantity) === Number(group.order_quantity)}>Spara antal</button><button className="primary" onClick={() => markReorderNeedOrdered(group)} disabled={saving}>Beställ · flytta till På väg hem</button></div></article>; })}</div>}</section>}
 
