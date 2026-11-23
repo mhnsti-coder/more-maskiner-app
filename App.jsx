@@ -1794,6 +1794,29 @@ export default function App() {
       @media(min-width:701px){.page-toolbar{grid-template-columns:minmax(0,1fr) auto;align-items:center}.page-summary{justify-content:flex-end}.reservation-card .secondary-action{width:auto}}
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
 
+      /* Kompakt startsida: sökningen ska synas direkt på mobil. */
+      @media(max-width:520px){
+        .home-notices{margin:0!important;padding:0!important}
+        .home-notices-head{margin-bottom:6px!important;padding:8px 10px!important}
+        .home-notice-card{padding:10px 12px!important;margin:5px 0!important}
+        .home-notice-card h3{margin:5px 0 3px!important;font-size:14px!important}
+        .home-notice-card p{font-size:12px!important;line-height:1.35!important}
+        .home-notice-actions{margin-top:6px!important}
+        .home-notices + .hero{margin-top:8px!important}
+        .app-shell .hero{margin:8px 0!important;gap:7px!important}
+        .app-shell .hero h1{font-size:30px!important;margin:1px 0 3px!important}
+        .app-shell .hero .eyebrow{margin:0 0 3px!important;font-size:9px!important}
+        .app-shell .hero .muted{margin:2px 0 0!important;font-size:13px!important;line-height:1.3!important}
+        .app-shell .hero>button{min-height:44px!important;padding:8px 12px!important}
+        .machine-search-intro{margin:8px 0 5px!important}
+        .machine-search-intro strong{font-size:13px!important;margin-bottom:1px!important}
+        .machine-search-intro p{font-size:11px!important;line-height:1.3!important}
+        .machine-search-form{gap:6px!important}
+        .machine-search-form .search,.machine-search-form .search input{min-height:42px!important}
+        .machine-search-submit{min-height:42px!important;padding:7px 12px!important}
+        .app-shell .stats{gap:7px!important;margin:9px 0 12px!important}
+        .app-shell .stats>div{padding:9px 11px!important;min-height:64px!important}
+      }
     `}</style>
     <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><div className="online-presence-wrap"><button type="button" className="online-presence-trigger" onClick={() => setShowOnlineUsers(value => !value)} aria-expanded={showOnlineUsers} aria-label={`${onlineUserIds.length} online – visa inloggade`} title="Visa vilka som är online"><span className="online-presence-dot" />{onlineUserIds.length} online</button>{showOnlineUsers && <div className="online-presence-popover"><strong>{onlineUserIds.length} online</strong>{onlineEntries.length ? onlineEntries.map(entry => <div className="online-presence-person" key={entry.key}><span className="online-presence-initials">{initials(entry.profile?.full_name)}</span><span className="online-presence-details"><strong>{entry.profile?.full_name || 'Medarbetare'}</strong><small>{entry.client_type} · {entry.device_type}</small></span></div>) : <div className="online-presence-person">Hämtar namn…</div>}</div>}</div>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={refreshAppData} disabled={appRefreshBusy} aria-label="Uppdatera hela appen" title={appRefreshBusy ? "Uppdaterar innehållet…" : "Uppdatera hela appen"}><RefreshCw size={18} className={appRefreshBusy ? "refresh-spinning" : ""} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className={`main-tabs ${isAdmin ? 'admin-tabs' : 'seller-tabs'}`}><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); loadDeletedMachines(); loadDevelopmentLog(); }}><Users size={16} /> Administration</button>}</nav>
@@ -1898,6 +1921,9 @@ export default function App() {
       </details>
 </div></section>}</> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till maskin</button></section>
+    <div className="machine-search-intro"><strong>Hitta rätt maskin</strong><p>Sök på artikelkod, maskinnummer, fabrikat eller modell. Du kan söka på hela eller delar av artikelkoden eller namnet.</p></div>
+    <section className="toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(searchInput.trim()); setVisibleMachineCount(20); }}><div className="search"><Search size={18} /><input placeholder="Artikelkod, maskinnummer eller modell" aria-label="Sök maskiner" value={searchInput} onChange={e => setSearchInput(e.target.value)} /></div>{searchInput && <button type="button" className="machine-search-clear" aria-label="Rensa sökning" onClick={() => { setSearchInput(''); setSearch(''); setVisibleMachineCount(20); setFilter('overview'); }}>Rensa</button>}<button className="primary machine-search-submit" type="submit">Sök</button></form></section>
+
     <section className="stats" style={isSearchingMachines ? {display:'none'} : undefined}>
       {[
         { value: 'in_stock', label: 'I lager', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1) - Number(m.reserved_quantity || 0)), 0), Icon: Tag },
@@ -1924,9 +1950,6 @@ export default function App() {
         </div>
       ))}
     </section>
-
-    <div className="machine-search-intro"><strong>Hitta rätt maskin</strong><p>Sök på artikelkod, maskinnummer, fabrikat eller modell. Du kan söka på hela eller delar av artikelkoden eller namnet.</p></div>
-    <section className="toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(searchInput.trim()); setVisibleMachineCount(20); }}><div className="search"><Search size={18} /><input placeholder="Artikelkod, maskinnummer eller modell" aria-label="Sök maskiner" value={searchInput} onChange={e => setSearchInput(e.target.value)} /></div>{searchInput && <button type="button" className="machine-search-clear" aria-label="Rensa sökning" onClick={() => { setSearchInput(''); setSearch(''); setVisibleMachineCount(20); setFilter('overview'); }}>Rensa</button>}<button className="primary machine-search-submit" type="submit">Sök</button></form></section>
     {isSearchingMachines && <p className="machine-search-count">{filtered.length} {filtered.length === 1 ? 'maskin hittades' : 'maskiner hittades'}</p>}
 
     {error && <div className="error-banner">{error}</div>}
