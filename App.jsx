@@ -57,6 +57,7 @@ export default function App() {
   const [reservationQuantity, setReservationQuantity] = useState('1');
   const [saleQuantity, setSaleQuantity] = useState('1');
   const [showDirectSaleForm, setShowDirectSaleForm] = useState(false);
+  const [overstockConfirmation, setOverstockConfirmation] = useState(null);
   const [directSaleForm, setDirectSaleForm] = useState({ customer_name: '', customer_phone: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -1367,7 +1368,7 @@ export default function App() {
     setSaving(false);
   }
 
-  async function markSold(reservationId = null) {
+  async function markSold(reservationId = null, confirmedOverstock = false) {
     if (!selected) return;
     if (isReservationContext && reservationId === null) {
       setError('I vyn Reserverade kan du bara sälja från eller avboka en kundreservation.');
@@ -1383,22 +1384,21 @@ export default function App() {
     }
     const amount = Number.parseInt(saleQuantity, 10);
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att sälja.'); return; }
-    setError(''); setSaving(true);
-    let result;
     if (reservationId === null) {
       const physicalAvailable = availableStock(selected);
       const incomingAvailable = Math.max(0, Number(selected.incoming_quantity || 0));
-      let confirmOverstock = false;
-      if (amount > physicalAvailable) {
-        const fromIncoming = Math.min(amount - physicalAvailable, incomingAvailable);
-        const toOrder = Math.max(0, amount - physicalAvailable - fromIncoming);
-        const message = `Du försöker sälja ${amount} st, men det finns bara ${physicalAvailable} st tillgängliga i lager.\n\n` +
-          `På väg hem: ${incomingAvailable} st.\n` +
-          `Behöver beställas: ${toOrder} st.\n\n` +
-          `Vill du genomföra försäljningen ändå? MÖRE sparar samtidigt beställningsbehovet.`;
-        if (!window.confirm(message)) { setSaving(false); return; }
-        confirmOverstock = true;
+      const shortage = Math.max(0, amount - physicalAvailable);
+      const fromIncoming = Math.min(shortage, incomingAvailable);
+      const toOrder = Math.max(0, shortage - fromIncoming);
+      if (shortage > 0 && !confirmedOverstock) {
+        setError('');
+        setOverstockConfirmation({ amount, physicalAvailable, incomingAvailable, fromIncoming, toOrder });
+        return;
       }
+    }
+    setError(''); setSaving(true);
+    let result;
+    if (reservationId === null) {
       result = await supabase.rpc('record_machine_sale_with_restock', {
         p_machine_id: selected.id, p_quantity: amount,
         p_customer_name: directSaleForm.customer_name.trim(),
@@ -1407,7 +1407,7 @@ export default function App() {
         p_customer_email: directSaleForm.customer_email.trim() || null,
         p_sale_date: directSaleForm.sale_date || null,
         p_note: directSaleForm.note.trim() || null,
-        p_confirm_overstock: confirmOverstock
+        p_confirm_overstock: confirmedOverstock
       });
     } else {
       result = await supabase.rpc('sell_machine_quantity', {
@@ -1419,6 +1419,7 @@ export default function App() {
       setSaleQuantity('1');
       if (reservationId === null) {
         setShowDirectSaleForm(false);
+        setOverstockConfirmation(null);
         setDirectSaleForm({ customer_name: '', customer_phone: '', customer_company: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), note: '' });
       }
       await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected, selectedReservationId);
@@ -1987,6 +1988,8 @@ export default function App() {
       <label className="full">Anteckning (valfritt)<textarea value={directSaleForm.note} onChange={e => setDirectSaleForm({ ...directSaleForm, note: e.target.value })} placeholder="Övrig information om försäljningen" /></label>
       <button className="primary wide" disabled={saving}>{saving ? 'Registrerar…' : 'Fortsätt med försäljningen'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
+
+    {overstockConfirmation && showDirectSaleForm && selected && <div className="overlay" onClick={() => !saving && setOverstockConfirmation(null)}><section className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="overstock-title" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setOverstockConfirmation(null)} disabled={saving}><X /></button><p className="eyebrow">LAGRET RÄCKER INTE</p><h2 id="overstock-title">Bekräfta försäljningen</h2><p>Du försöker sälja <strong>{overstockConfirmation.amount} st</strong>, men det finns bara <strong>{overstockConfirmation.physicalAvailable} st</strong> tillgängliga i lager.</p><div className="reservation-info"><p>På väg hem: <strong>{overstockConfirmation.incomingAvailable} st</strong></p><p>Täcks av inkommande: <strong>{overstockConfirmation.fromIncoming} st</strong></p><p>Behöver beställas: <strong>{overstockConfirmation.toOrder} st</strong></p></div><p className="muted">Om du fortsätter sparas försäljningen med kunduppgifterna och beställningsbehovet registreras automatiskt.</p><button className="primary wide" onClick={() => markSold(null, true)} disabled={saving}>{saving ? 'Registrerar…' : 'Ja, genomför försäljningen'}</button><button className="wide" onClick={() => setOverstockConfirmation(null)} disabled={saving}>Avbryt</button></section></div>}
 
     {showReservation && selected && <div className="overlay" onClick={() => { setShowReservation(false); setReservationEndDate(''); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={availableStock(selected)} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><label className="full">Reserverad till och med (valfritt)<input type="date" min={new Date().toLocaleDateString('sv-SE')} value={reservationEndDate} onChange={e => setReservationEndDate(e.target.value)} /><small className="muted">Ansvarig säljare får en pushpåminnelse två dagar före slutdatumet.</small></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
