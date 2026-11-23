@@ -557,13 +557,20 @@ export default function App() {
 
   async function loadReservations(silent = false) {
     if (!session) return;
-    const { data, error } = await supabase.from('reservations')
-      .select('*').eq('status', 'active').order('reservation_date', { ascending: false });
-    if (error) {
-      if (!silent) setError('Kunde inte hämta reservationer: ' + error.message);
+    const [{ data, error }, { data: activeMachines, error: machineError }] = await Promise.all([
+      supabase.from('reservations')
+        .select('*').eq('status', 'active').order('reservation_date', { ascending: false }),
+      supabase.from('machines').select('id').eq('is_deleted', false)
+    ]);
+    if (error || machineError) {
+      const message = error?.message || machineError?.message || 'Okänt fel';
+      if (!silent) setError('Kunde inte hämta reservationer: ' + message);
       return;
     }
-    setReservations(data || []);
+    // Visa bara reservationer som hör till maskiner som fortfarande finns i registret.
+    // Borttagna maskiner ska inte lämna kvar aktiva poster under Mina reservationer.
+    const activeMachineIds = new Set((activeMachines || []).map(machine => machine.id));
+    setReservations((data || []).filter(reservation => activeMachineIds.has(reservation.machine_id)));
   }
 
 
