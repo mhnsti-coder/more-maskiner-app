@@ -293,7 +293,7 @@ export default function App() {
 
     let active = true;
     const gracePeriodMs = 2 * 60 * 1000;
-    const lastSeenByUser = new Map();
+    const lastSeenBySession = new Map();
     const channel = supabase.channel('more-online-presence');
     const userAgent = navigator.userAgent || '';
     const isInstalledApp = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -318,17 +318,25 @@ export default function App() {
         device_type: entry.device_type || 'Enhet okänd',
         browser_name: entry.browser_name || ''
       }));
-      const connectedIds = new Set(sessions.map(entry => entry.user_id));
+      // Spara varje enskild anslutning separat. Då ligger även dess app-/webbläsarinfo
+      // kvar under respittiden om exempelvis iOS tillfälligt pausar Presence.
+      sessions.forEach(entry => {
+        const key = `${entry.user_id}:${entry.session_id}`;
+        lastSeenBySession.set(key, { ...entry, last_seen: now });
+      });
 
-      // Behåll användare i två minuter vid korta avbrott när iOS pausar appen.
-      connectedIds.forEach(id => lastSeenByUser.set(id, now));
-      const visibleIds = [];
-      for (const [id, lastSeen] of lastSeenByUser.entries()) {
-        if (connectedIds.has(id) || now - lastSeen < gracePeriodMs) visibleIds.push(id);
-        else lastSeenByUser.delete(id);
+      const visibleSessions = [];
+      for (const [key, entry] of lastSeenBySession.entries()) {
+        if (now - entry.last_seen < gracePeriodMs) {
+          visibleSessions.push(entry);
+        } else {
+          lastSeenBySession.delete(key);
+        }
       }
+
+      const visibleIds = [...new Set(visibleSessions.map(entry => entry.user_id))];
       setOnlineUserIds(visibleIds);
-      setOnlineSessions(sessions);
+      setOnlineSessions(visibleSessions);
     };
 
     channel
