@@ -131,6 +131,7 @@ export default function App() {
   const [appRefreshBusy, setAppRefreshBusy] = useState(false);
   const [appRefreshMessage, setAppRefreshMessage] = useState('');
   const [onlineUserIds, setOnlineUserIds] = useState([]);
+  const [onlineSessions, setOnlineSessions] = useState([]);
   const [showOnlineUsers, setShowOnlineUsers] = useState(false);
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isSuperAdminAccount = session?.user?.email?.trim().toLowerCase() === 'mhnsti@gmail.com';
@@ -285,6 +286,7 @@ export default function App() {
     const userId = session?.user?.id;
     if (!userId) {
       setOnlineUserIds([]);
+      setOnlineSessions([]);
       setShowOnlineUsers(false);
       return;
     }
@@ -293,26 +295,40 @@ export default function App() {
     const gracePeriodMs = 2 * 60 * 1000;
     const lastSeenByUser = new Map();
     const channel = supabase.channel('more-online-presence');
+    const userAgent = navigator.userAgent || '';
+    const isInstalledApp = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    const deviceType = /iPad|Tablet/i.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      ? 'Surfplatta'
+      : /Mobi|iPhone|Android/i.test(userAgent) ? 'Mobil' : 'Dator';
+    const browserName = /Edg\//.test(userAgent) ? 'Edge'
+      : /Firefox\//.test(userAgent) ? 'Firefox'
+      : /CriOS|Chrome\//.test(userAgent) ? 'Chrome'
+      : /Safari\//.test(userAgent) ? 'Safari' : 'Webbläsare';
+    const clientType = isInstalledApp ? 'Installerad app' : `Webbläsare · ${browserName}`;
+    const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     const updateOnlineUsers = () => {
       if (!active) return;
       const now = Date.now();
       const state = channel.presenceState();
-      const connectedIds = new Set(
-        Object.values(state).flat().map(entry => entry?.user_id).filter(Boolean)
-      );
+      const sessions = Object.values(state).flat().filter(entry => entry?.user_id).map(entry => ({
+        user_id: entry.user_id,
+        session_id: entry.session_id || 'legacy',
+        client_type: entry.client_type || 'Okänd anslutning',
+        device_type: entry.device_type || 'Enhet okänd',
+        browser_name: entry.browser_name || ''
+      }));
+      const connectedIds = new Set(sessions.map(entry => entry.user_id));
 
-      // Aktiva användare får en färsk tidsstämpel. Saknade användare ligger kvar
-      // i listan i två minuter så iOS hinner pausa/återuppta anslutningen.
+      // Behåll användare i två minuter vid korta avbrott när iOS pausar appen.
       connectedIds.forEach(id => lastSeenByUser.set(id, now));
       const visibleIds = [];
       for (const [id, lastSeen] of lastSeenByUser.entries()) {
-        if (connectedIds.has(id) || now - lastSeen < gracePeriodMs) {
-          visibleIds.push(id);
-        } else {
-          lastSeenByUser.delete(id);
-        }
+        if (connectedIds.has(id) || now - lastSeen < gracePeriodMs) visibleIds.push(id);
+        else lastSeenByUser.delete(id);
       }
       setOnlineUserIds(visibleIds);
+      setOnlineSessions(sessions);
     };
 
     channel
@@ -321,7 +337,14 @@ export default function App() {
       .on('presence', { event: 'leave' }, updateOnlineUsers)
       .subscribe(async status => {
         if (status === 'SUBSCRIBED') {
-          const { error } = await channel.track({ user_id: userId, online_at: new Date().toISOString() });
+          const { error } = await channel.track({
+            user_id: userId,
+            session_id: sessionId,
+            client_type: clientType,
+            device_type: deviceType,
+            browser_name: browserName,
+            online_at: new Date().toISOString()
+          });
           if (error) console.warn('Kunde inte registrera online-status:', error.message);
           updateOnlineUsers();
         }
@@ -1428,7 +1451,11 @@ export default function App() {
   const date = value => value ? new Date(value).toLocaleDateString('sv-SE') : '–';
   const dateTime = value => value ? new Date(value).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '';
   const initials = name => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase() || '').join('') || '?';
-  const onlineProfiles = onlineUserIds.map(id => profiles.find(profile => profile.id === id)).filter(Boolean).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '', 'sv'));
+  const onlineEntries = onlineUserIds.flatMap(id => {
+    const profile = profiles.find(item => item.id === id);
+    const sessions = onlineSessions.filter(item => item.user_id === id);
+    return sessions.length ? sessions.map((item, index) => ({ ...item, profile, key: `${id}-${item.session_id}-${index}` })) : [{ user_id: id, profile, client_type: 'Återansluter…', device_type: 'Enhet ej tillgänglig', key: `${id}-grace` }];
+  }).sort((a, b) => (a.profile?.full_name || '').localeCompare(b.profile?.full_name || '', 'sv'));
 
   if (session && passwordFlow) return <main className="login"><div className="brand">MÖRE<span /></div><section className="login-card"><p className="eyebrow">KONTOINSTÄLLNING</p><h1>{passwordFlow === 'recovery' ? 'Nytt lösenord' : 'Skapa ditt lösenord'}</h1><p className="muted">{passwordNotice || 'Välj ett personligt lösenord för ditt konto.'}</p><form onSubmit={saveNewPassword}><label>Nytt lösenord<input type="password" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={8} required /></label><label>Bekräfta lösenord<input type="password" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} minLength={8} required /></label><button className="primary wide" disabled={passwordBusy}>{passwordBusy ? 'Sparar…' : 'Spara lösenord'}</button></form>{error && <p className="error">{error}</p>}</section></main>;
 
@@ -1477,7 +1504,7 @@ export default function App() {
       .online-presence-wrap{position:relative;display:flex;align-items:center;flex:0 0 auto}
       .online-presence-trigger{display:inline-flex;align-items:center;gap:5px;padding:5px 3px;border:0;background:transparent;color:#929292;font-size:11px;white-space:nowrap;cursor:pointer}
       .online-presence-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#43ad70;box-shadow:0 0 5px #43ad7040}
-      .online-presence-popover{position:absolute;z-index:1000;top:calc(100% + 10px);left:0!important;right:auto!important;width:220px!important;max-width:min(220px,calc(100vw - 32px))!important;min-width:0;box-sizing:border-box;padding:10px 12px;border:1px solid #383838;border-radius:9px;background:#1c1c1c;box-shadow:0 8px 24px #0008;overflow-wrap:anywhere}.online-presence-person{min-width:0}.online-presence-person>span:last-child{min-width:0;overflow-wrap:anywhere}
+      .online-presence-popover{position:absolute;z-index:1000;top:calc(100% + 10px);left:0!important;right:auto!important;width:220px!important;max-width:min(220px,calc(100vw - 32px))!important;min-width:0;box-sizing:border-box;padding:10px 12px;border:1px solid #383838;border-radius:9px;background:#1c1c1c;box-shadow:0 8px 24px #0008;overflow-wrap:anywhere}.online-presence-person{min-width:0}.online-presence-person>span:last-child{min-width:0;overflow-wrap:anywhere}.online-presence-details{display:flex;flex-direction:column;gap:2px}.online-presence-details strong{color:#e5e5e5;font-size:11px;font-weight:650}.online-presence-details small{color:#969696;font-size:10px;line-height:1.3}
       .online-presence-popover strong{display:block;margin:0 0 7px;color:#ddd;font-size:11px;font-weight:700}
       .online-presence-person{display:flex;align-items:center;gap:8px;padding:6px 0;color:#c9c9c9;font-size:12px}
       .online-presence-initials{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#303943;color:#e4e9ed;font-size:9px;font-weight:800}
@@ -1717,7 +1744,7 @@ export default function App() {
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
 
     `}</style>
-    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><div className="online-presence-wrap"><button type="button" className="online-presence-trigger" onClick={() => setShowOnlineUsers(value => !value)} aria-expanded={showOnlineUsers} aria-label={`${onlineUserIds.length} online – visa inloggade`} title="Visa vilka som är online"><span className="online-presence-dot" />{onlineUserIds.length} online</button>{showOnlineUsers && <div className="online-presence-popover"><strong>{onlineUserIds.length} online</strong>{onlineProfiles.length ? onlineProfiles.map(profile => <div className="online-presence-person" key={profile.id}><span className="online-presence-initials">{initials(profile.full_name)}</span><span>{profile.full_name || 'Medarbetare'}</span></div>) : <div className="online-presence-person">Hämtar namn…</div>}</div>}</div>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={refreshAppData} disabled={appRefreshBusy} aria-label="Uppdatera hela appen" title={appRefreshBusy ? "Uppdaterar innehållet…" : "Uppdatera hela appen"}><RefreshCw size={18} className={appRefreshBusy ? "refresh-spinning" : ""} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><div className="online-presence-wrap"><button type="button" className="online-presence-trigger" onClick={() => setShowOnlineUsers(value => !value)} aria-expanded={showOnlineUsers} aria-label={`${onlineUserIds.length} online – visa inloggade`} title="Visa vilka som är online"><span className="online-presence-dot" />{onlineUserIds.length} online</button>{showOnlineUsers && <div className="online-presence-popover"><strong>{onlineUserIds.length} online</strong>{onlineEntries.length ? onlineEntries.map(entry => <div className="online-presence-person" key={entry.key}><span className="online-presence-initials">{initials(entry.profile?.full_name)}</span><span className="online-presence-details"><strong>{entry.profile?.full_name || 'Medarbetare'}</strong><small>{entry.client_type} · {entry.device_type}</small></span></div>) : <div className="online-presence-person">Hämtar namn…</div>}</div>}</div>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={refreshAppData} disabled={appRefreshBusy} aria-label="Uppdatera hela appen" title={appRefreshBusy ? "Uppdaterar innehållet…" : "Uppdatera hela appen"}><RefreshCw size={18} className={appRefreshBusy ? "refresh-spinning" : ""} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
     <nav className={`main-tabs ${isAdmin ? 'admin-tabs' : 'seller-tabs'}`}><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); loadDeletedMachines(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {appRefreshMessage && <p className="muted" role="status" style={{ margin: '8px 0', fontSize: 12, color: '#9bd5a5' }}>{appRefreshMessage}</p>}
