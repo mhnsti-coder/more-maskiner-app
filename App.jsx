@@ -3,17 +3,18 @@ import { createClient } from '@supabase/supabase-js';
 import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
-const statusLabel = { in_stock: 'I lager', reserved: 'Reserverad', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem', mixed_reserved: 'I lager + reserverad' };
+const statusLabel = { in_stock: 'I lager', reserved: 'Såld', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem', mixed_reserved: 'I lager + såld' };
+const availableStock = machine => Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.external_reserved_quantity || 0));
+const displayedSoldQuantity = machine => Math.max(0, Number(machine.sold_quantity || 0) + Number(machine.external_reserved_quantity || 0));
 // Statusen beskriver fysiskt lager och inkommande leverans var för sig. Inkommande antal räknas aldrig som lager.
 const displayMachineStatus = machine => {
   const stock = Math.max(0, Number(machine.stock_quantity ?? 1));
-  const reserved = Math.max(0, Number(machine.reserved_quantity || 0));
+  const reserved = Math.max(0, Number(machine.external_reserved_quantity || 0));
   const available = Math.max(0, stock - reserved);
   const incoming = Math.max(0, Number(machine.incoming_quantity || 0));
-  if (available > 0 && reserved > 0) return 'mixed_reserved';
   if (available > 0 && incoming > 0) return 'mixed';
   if (available > 0) return 'in_stock';
-  if (reserved > 0 && stock > 0) return 'reserved';
+  if (reserved > 0 || Number(machine.sold_quantity || 0) > 0) return 'sold';
   if (incoming > 0) return 'incoming';
   if (Number(machine.sold_quantity || 0) > 0) return 'sold';
   return machine.status;
@@ -35,15 +36,9 @@ export default function App() {
   const [machines, setMachines] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
-  const [deletedMachines, setDeletedMachines] = useState([]);
-  const [deletedMachinesLoading, setDeletedMachinesLoading] = useState(false);
-  const [restoringMachineId, setRestoringMachineId] = useState(null);
   const [authActivity, setAuthActivity] = useState([]);
   const [authActivityLoading, setAuthActivityLoading] = useState(false);
   const [showAuthActivity, setShowAuthActivity] = useState(false);
-  const [releaseNotes, setReleaseNotes] = useState([]);
-  const [showReleaseHistory, setShowReleaseHistory] = useState(false);
-  const [showDevelopmentStatus, setShowDevelopmentStatus] = useState(false);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
   const [showMachineHistory, setShowMachineHistory] = useState(false);
@@ -55,23 +50,16 @@ export default function App() {
   const [selectedDetailMode, setSelectedDetailMode] = useState('stock');
   const [reservationQuantity, setReservationQuantity] = useState('1');
   const [saleQuantity, setSaleQuantity] = useState('1');
-  const [showSaleForm, setShowSaleForm] = useState(false);
-  const [saleReservation, setSaleReservation] = useState(null);
-  const [saleFromExternalReservation, setSaleFromExternalReservation] = useState(false);
-  const [saleHistory, setSaleHistory] = useState([]);
-  const [saleForm, setSaleForm] = useState({ customer_name: '', customer_company: '', customer_phone: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), quantity: '1', note: '' });
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
-  const [searchInput, setSearchInput] = useState('');
   const [filter, setFilter] = useState('overview');
-  const [visibleMachineCount, setVisibleMachineCount] = useState(20);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showEditMachine, setShowEditMachine] = useState(false);
   const [showReservation, setShowReservation] = useState(false);
   const [editingReservation, setEditingReservation] = useState(null);
-  const [reservationEditForm, setReservationEditForm] = useState({ customer_name: '', customer_company: '', customer_phone: '', customer_email: '', customer_note: '', quantity: '1', reserved_by: '', reservation_date: '', reservation_end_date: '' });
+  const [reservationEditForm, setReservationEditForm] = useState({ customer_name: '', quantity: '1', reserved_by: '', reservation_date: '', reservation_end_date: '' });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordFlow, setPasswordFlow] = useState(''); // setup | recovery | forgot
@@ -90,10 +78,6 @@ export default function App() {
   const [receiveDeliveryAmounts, setReceiveDeliveryAmounts] = useState({});
   const [receiveQuantity, setReceiveQuantity] = useState('1');
   const [customerName, setCustomerName] = useState('');
-  const [customerCompany, setCustomerCompany] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
-  const [customerEmail, setCustomerEmail] = useState('');
-  const [customerNote, setCustomerNote] = useState('');
   const [reservedBy, setReservedBy] = useState('');
   const [reservationDate, setReservationDate] = useState('');
   const [reservationEndDate, setReservationEndDate] = useState('');
@@ -145,7 +129,6 @@ export default function App() {
   const [appRefreshBusy, setAppRefreshBusy] = useState(false);
   const [appRefreshMessage, setAppRefreshMessage] = useState('');
   const [onlineUserIds, setOnlineUserIds] = useState([]);
-  const [onlineSessions, setOnlineSessions] = useState([]);
   const [showOnlineUsers, setShowOnlineUsers] = useState(false);
   const currentProfile = profiles.find(p => p.id === session?.user?.id);
   const isSuperAdminAccount = session?.user?.email?.trim().toLowerCase() === 'mhnsti@gmail.com';
@@ -300,57 +283,34 @@ export default function App() {
     const userId = session?.user?.id;
     if (!userId) {
       setOnlineUserIds([]);
-      setOnlineSessions([]);
       setShowOnlineUsers(false);
       return;
     }
 
     let active = true;
     const gracePeriodMs = 2 * 60 * 1000;
-    const lastSeenBySession = new Map();
+    const lastSeenByUser = new Map();
     const channel = supabase.channel('more-online-presence');
-    const userAgent = navigator.userAgent || '';
-    const isInstalledApp = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    const deviceType = /iPad|Tablet/i.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-      ? 'Surfplatta'
-      : /Mobi|iPhone|Android/i.test(userAgent) ? 'Mobil' : 'Dator';
-    const browserName = /Edg\//.test(userAgent) ? 'Edge'
-      : /Firefox\//.test(userAgent) ? 'Firefox'
-      : /CriOS|Chrome\//.test(userAgent) ? 'Chrome'
-      : /Safari\//.test(userAgent) ? 'Safari' : 'Webbläsare';
-    const clientType = isInstalledApp ? 'Installerad app' : `Webbläsare · ${browserName}`;
-    const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
     const updateOnlineUsers = () => {
       if (!active) return;
       const now = Date.now();
       const state = channel.presenceState();
-      const sessions = Object.values(state).flat().filter(entry => entry?.user_id).map(entry => ({
-        user_id: entry.user_id,
-        session_id: entry.session_id || 'legacy',
-        client_type: entry.client_type || 'Okänd anslutning',
-        device_type: entry.device_type || 'Enhet okänd',
-        browser_name: entry.browser_name || ''
-      }));
-      // Spara varje enskild anslutning separat. Då ligger även dess app-/webbläsarinfo
-      // kvar under respittiden om exempelvis iOS tillfälligt pausar Presence.
-      sessions.forEach(entry => {
-        const key = `${entry.user_id}:${entry.session_id}`;
-        lastSeenBySession.set(key, { ...entry, last_seen: now });
-      });
+      const connectedIds = new Set(
+        Object.values(state).flat().map(entry => entry?.user_id).filter(Boolean)
+      );
 
-      const visibleSessions = [];
-      for (const [key, entry] of lastSeenBySession.entries()) {
-        if (now - entry.last_seen < gracePeriodMs) {
-          visibleSessions.push(entry);
+      // Aktiva användare får en färsk tidsstämpel. Saknade användare ligger kvar
+      // i listan i två minuter så iOS hinner pausa/återuppta anslutningen.
+      connectedIds.forEach(id => lastSeenByUser.set(id, now));
+      const visibleIds = [];
+      for (const [id, lastSeen] of lastSeenByUser.entries()) {
+        if (connectedIds.has(id) || now - lastSeen < gracePeriodMs) {
+          visibleIds.push(id);
         } else {
-          lastSeenBySession.delete(key);
+          lastSeenByUser.delete(id);
         }
       }
-
-      const visibleIds = [...new Set(visibleSessions.map(entry => entry.user_id))];
       setOnlineUserIds(visibleIds);
-      setOnlineSessions(visibleSessions);
     };
 
     channel
@@ -359,14 +319,7 @@ export default function App() {
       .on('presence', { event: 'leave' }, updateOnlineUsers)
       .subscribe(async status => {
         if (status === 'SUBSCRIBED') {
-          const { error } = await channel.track({
-            user_id: userId,
-            session_id: sessionId,
-            client_type: clientType,
-            device_type: deviceType,
-            browser_name: browserName,
-            online_at: new Date().toISOString()
-          });
+          const { error } = await channel.track({ user_id: userId, online_at: new Date().toISOString() });
           if (error) console.warn('Kunde inte registrera online-status:', error.message);
           updateOnlineUsers();
         }
@@ -522,10 +475,9 @@ export default function App() {
       const incomingByMachine = {};
       (deliveryRows || []).forEach(d => { incomingByMachine[d.machine_id] = (incomingByMachine[d.machine_id] || 0) + Number(d.quantity || 0); });
       const rowsWithIncoming = rows.map(m => ({ ...m, incoming_quantity: incomingByMachine[m.id] || 0 }));
-      const { data: reservationRows, error: reservationRowsError } = await supabase.from('reservations').select('machine_id, quantity, fulfilled_quantity').eq('status', 'active');
-      const reservedByMachine = {};
-      (reservationRows || []).forEach(r => { reservedByMachine[r.machine_id] = (reservedByMachine[r.machine_id] || 0) + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); });
-      const rowsWithReservations = rowsWithIncoming.map(m => { const totalReserved = Number(m.external_reserved_quantity || 0) + (reservedByMachine[m.id] || 0); return { ...m, reserved_quantity: totalReserved, app_reserved_quantity: reservedByMachine[m.id] || 0, available_quantity: Math.max(0, Number(m.stock_quantity ?? 1) - totalReserved) }; });
+      // MÖRE använder inte längre kundreservationer i lageröversikten.
+      // external_reserved_quantity kommer från artikelregistret och visas som sålt/orderlagt.
+      const rowsWithReservations = rowsWithIncoming.map(m => ({ ...m, reserved_quantity: 0, app_reserved_quantity: 0, available_quantity: availableStock(m), displayed_sold_quantity: displayedSoldQuantity(m) }));
       const { data: photoRows, error: photoError } = await supabase
         .from('machine_photos')
         .select('id, machine_id, storage_path, is_primary')
@@ -571,20 +523,13 @@ export default function App() {
 
   async function loadReservations(silent = false) {
     if (!session) return;
-    const [{ data, error }, { data: activeMachines, error: machineError }] = await Promise.all([
-      supabase.from('reservations')
-        .select('*').eq('status', 'active').order('reservation_date', { ascending: false }),
-      supabase.from('machines').select('id').eq('is_deleted', false)
-    ]);
-    if (error || machineError) {
-      const message = error?.message || machineError?.message || 'Okänt fel';
-      if (!silent) setError('Kunde inte hämta reservationer: ' + message);
+    const { data, error } = await supabase.from('reservations')
+      .select('*').eq('status', 'active').order('reservation_date', { ascending: false });
+    if (error) {
+      if (!silent) setError('Kunde inte hämta reservationer: ' + error.message);
       return;
     }
-    // Visa bara reservationer som hör till maskiner som fortfarande finns i registret.
-    // Borttagna maskiner ska inte lämna kvar aktiva poster under Mina reservationer.
-    const activeMachineIds = new Set((activeMachines || []).map(machine => machine.id));
-    setReservations((data || []).filter(reservation => activeMachineIds.has(reservation.machine_id)));
+    setReservations(data || []);
   }
 
 
@@ -891,42 +836,6 @@ export default function App() {
     if (error) console.warn('Kunde inte spara inloggningshändelsen:', error.message);
   }
 
-  async function loadDeletedMachines() {
-    if (!isAdmin) return;
-    setDeletedMachinesLoading(true);
-    const { data, error } = await supabase
-      .from('machines')
-      .select('id, machine_number, brand, model, article_code, stock_quantity, incoming_quantity, sold_quantity, updated_at')
-      .eq('is_deleted', true)
-      .order('updated_at', { ascending: false });
-    if (error) setError('Kunde inte hämta borttagna maskiner: ' + error.message);
-    else setDeletedMachines(data || []);
-    setDeletedMachinesLoading(false);
-  }
-
-  async function restoreMachine(machine) {
-    if (!isAdmin || restoringMachineId) return;
-    const label = [machine.article_code ? `Artikel ${machine.article_code}` : machine.machine_number, machine.brand, machine.model].filter(Boolean).join(' · ');
-    if (!window.confirm(`Återställa maskinen?\n\n${label}\n\nMaskinen blir synlig i lageröversikten igen.`)) return;
-    setRestoringMachineId(machine.id);
-    setError('');
-    const { error } = await supabase.rpc('admin_restore_machine', { p_machine_id: machine.id });
-    if (error) {
-      setError('Kunde inte återställa maskinen: ' + error.message);
-    } else {
-      await Promise.all([loadDeletedMachines(), loadMachines()]);
-    }
-    setRestoringMachineId(null);
-  }
-
-  async function loadDevelopmentLog() {
-    if (!isAdmin) return;
-    const { data, error } = await supabase.from('app_release_notes').select('*').order('release_date', { ascending: false }).order('created_at', { ascending: false });
-    if (error) setError('Kunde inte hämta versionshistoriken: ' + error.message);
-    else setReleaseNotes(data || []);
-  }
-
-
   async function loadAdminUsers() {
     setAdminUsersLoading(true);
     try {
@@ -946,22 +855,10 @@ export default function App() {
   useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); loadPrivateConversations(); loadReservations(true); loadHomeNotices(); } }, [session?.user?.id]);
 
   const filtered = useMemo(() => machines.filter(m => {
-    const q = search.trim().toLocaleLowerCase('sv');
-    const matches = !q || [m.article_code, m.machine_number, m.brand, m.model].some(v => String(v ?? '').toLocaleLowerCase('sv').includes(q));
-    // Översiktsläget är inte en maskinstatus: sökning där ska omfatta alla maskiner.
-    const matchesFilter = filter === 'overview' || filter === 'all' || (filter === 'sold'
-      ? Number(m.sold_quantity || 0) > 0 || m.status === 'sold'
-      : filter === 'incoming'
-        ? Number(m.incoming_quantity || 0) > 0
-        : filter === 'reserved'
-          ? Number(m.reserved_quantity || 0) > 0
-          : filter === 'in_stock'
-            ? Number(m.available_quantity ?? m.stock_quantity ?? 1) > 0
-            : m.status === filter);
-    return matches && matchesFilter;
+    const q = search.toLowerCase();
+    const matches = [m.machine_number, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
+    return matches && (filter === 'all' || (filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
   }), [machines, search, filter]);
-  const visibleMachines = filtered.slice(0, visibleMachineCount);
-  const isSearchingMachines = Boolean(search.trim());
 
   async function signIn(event) {
     event.preventDefault(); setError(''); setPasswordNotice('');
@@ -1095,25 +992,23 @@ export default function App() {
     setSelectedReservationId(reservationId);
     // Spara vilken arbetsvy som öppnade detaljen. Förlita oss inte på filterstate
     // när detaljdialogen väl är öppen.
-    setSelectedDetailMode(reservationId !== null || filter === 'reserved' ? 'reservation' : filter === 'sold' ? 'sold' : 'stock');
+    setSelectedDetailMode(reservationId !== null ? 'reservation' : filter === 'sold' ? 'sold' : 'stock');
     const { data: freshMachine, error: freshMachineError } = await supabase.from('machines').select('*').eq('id', machine.id).single();
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
     setSelected(machine);
     setShowMachineHistory(false);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setSaleHistory([]); setMachinePhotos([]); setActiveReservations([]);
-    const [c, h, r, p, d, sales] = await Promise.all([
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
+    const [c, h, r, p, d] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').order('created_at', { ascending: false }),
       supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true }),
-      supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', machine.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false }),
-      supabase.from('machine_sales').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false })
+      supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', machine.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false })
     ]);
     if (c.error) setError(c.error.message); else setComments(c.data || []);
     if (h.error) setError(h.error.message); else setHistory(h.data || []);
-    if (sales.error) setError('Kunde inte hämta försäljningshistorik: ' + sales.error.message); else setSaleHistory(sales.data || []);
-    if (r.error) setError(r.error.message); else { const reservations = r.data || []; setActiveReservations(reservations); const appReservedQuantity = reservations.reduce((n, item) => n + Math.max(0, Number(item.quantity || 1) - Number(item.fulfilled_quantity || 0)), 0); const reservedQuantity = Number(machine.external_reserved_quantity || 0) + appReservedQuantity; setSelected(current => current?.id === machine.id ? { ...current, reserved_quantity: reservedQuantity, app_reserved_quantity: appReservedQuantity, available_quantity: Math.max(0, Number(current.stock_quantity ?? 1) - reservedQuantity) } : current); }
+    if (r.error) setError(r.error.message); else { const reservations = r.data || []; setActiveReservations(reservations); setSelected(current => current?.id === machine.id ? { ...current, reserved_quantity: 0, app_reserved_quantity: 0, available_quantity: availableStock(current), displayed_sold_quantity: displayedSoldQuantity(current) } : current); }
     if (p.error) setError('Kunde inte hämta maskinbilder: ' + p.error.message);
     else setMachinePhotos((p.data || []).map(photo => ({
       ...photo,
@@ -1235,10 +1130,8 @@ export default function App() {
     const amount = Number.parseInt(reservationQuantity, 10);
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att reservera.'); return; }
     setSaving(true); setError('');
-    const { data, error: reservationError } = await supabase.rpc('create_reservation_with_contact', {
-      p_machine_id: selected.id, p_customer_name: customerName, p_customer_phone: customerPhone,
-      p_customer_company: customerCompany || null, p_customer_email: customerEmail || null, p_customer_note: customerNote || null,
-      p_reservation_date: reservationDate || null, p_quantity: amount, p_reserved_by: reservedBy || null
+    const { data, error: reservationError } = await supabase.rpc('reserve_machine', {
+      p_machine_id: selected.id, p_customer_name: customerName, p_reservation_date: reservationDate || null, p_quantity: amount, p_reserved_by: reservedBy || null
     });
     if (reservationError) setError(reservationError.message);
     else {
@@ -1252,7 +1145,7 @@ export default function App() {
           return;
         }
       }
-      setShowReservation(false); setCustomerName(''); setCustomerCompany(''); setCustomerPhone(''); setCustomerEmail(''); setCustomerNote(''); setReservedBy(''); setReservationDate(''); setReservationEndDate(''); setReservationQuantity('1');
+      setShowReservation(false); setCustomerName(''); setReservedBy(''); setReservationDate(''); setReservationEndDate(''); setReservationQuantity('1');
       await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected);
     }
     setSaving(false);
@@ -1263,10 +1156,6 @@ export default function App() {
     setEditingReservation(reservation);
     setReservationEditForm({
       customer_name: reservation.customer_name || '',
-      customer_company: reservation.customer_company || '',
-      customer_phone: reservation.customer_phone || '',
-      customer_email: reservation.customer_email || '',
-      customer_note: reservation.customer_note || '',
       quantity: String(reservation.quantity ?? 1),
       reserved_by: reservation.reserved_by || '',
       reservation_date: reservation.reservation_date || '',
@@ -1288,8 +1177,8 @@ export default function App() {
       setError(`Antalet kan inte vara lägre än redan levererade ${fulfilled} st.`);
       return;
     }
-    if (!reservationEditForm.customer_name.trim() || !reservationEditForm.customer_phone.trim()) {
-      setError('Kundnamn och telefonnummer måste anges.');
+    if (!reservationEditForm.customer_name.trim()) {
+      setError('Kundnamn måste anges.');
       return;
     }
     if (!reservationEditForm.reserved_by) {
@@ -1299,11 +1188,12 @@ export default function App() {
 
     setSaving(true);
     setError('');
-    const { error: updateError } = await supabase.rpc('update_reservation_with_contact', {
-      p_reservation_id: editingReservation.id, p_customer_name: reservationEditForm.customer_name.trim(),
-      p_customer_phone: reservationEditForm.customer_phone.trim(), p_customer_company: reservationEditForm.customer_company || null,
-      p_customer_email: reservationEditForm.customer_email || null, p_customer_note: reservationEditForm.customer_note || null,
-      p_reservation_date: reservationEditForm.reservation_date || null, p_quantity: quantity, p_reserved_by: reservationEditForm.reserved_by
+    const { error: updateError } = await supabase.rpc('update_machine_reservation', {
+      p_reservation_id: editingReservation.id,
+      p_customer_name: reservationEditForm.customer_name.trim(),
+      p_reservation_date: reservationEditForm.reservation_date || null,
+      p_quantity: quantity,
+      p_reserved_by: reservationEditForm.reserved_by
     });
     if (updateError) {
       setError('Reservationen kunde inte uppdateras: ' + updateError.message);
@@ -1402,79 +1292,28 @@ export default function App() {
     setStockEdit(String(nextStock)); setError(''); await refreshIncomingDeliveries(); await loadMachineDetails({ ...selected, stock_quantity: nextStock });
   }
 
-  function markSold(reservationId = null) {
-    if (!selected || filter === 'incoming') return;
+  async function markSold(reservationId = null) {
+    if (!selected) return;
     if (isReservationContext && reservationId === null) {
-      setError('I vyn Reserverade kan du bara sälja från en kundreservation.');
+      setError('I vyn Reserverade kan du bara sälja från eller avboka en kundreservation.');
       return;
     }
-    const reservation = reservationId ? activeReservations.find(r => r.id === reservationId) : null;
-    if (reservationId && !reservation) { setError('Reservationen hittades inte längre. Uppdatera vyn.'); return; }
-    if (reservationId && selectedReservationId !== null && selectedReservationId !== reservationId) {
-      setError('Öppna den aktuella kundreservationen innan du säljer från den.'); return;
-    }
-    if (reservationId && selectedReservationId === null && selectedDetailMode !== 'reservation') {
-      setError('Öppna kundreservationen från Reserverade innan du säljer från den.'); return;
-    }
-    setSaleReservation(reservation);
-    setSaleFromExternalReservation(false);
-    setSaleForm({
-      customer_name: reservation?.customer_name || '', customer_company: reservation?.customer_company || '',
-      customer_phone: reservation?.customer_phone || '', customer_email: reservation?.customer_email || '',
-      sale_date: new Date().toLocaleDateString('sv-SE'),
-      quantity: saleQuantity || '1', note: reservation?.customer_note || ''
-    });
-    setShowSaleForm(true); setError('');
-  }
-
-  function markSoldExternalReservation() {
-    if (!selected || Number(selected.external_reserved_quantity || 0) < 1) {
-      setError('Det finns inget externt reserverat antal att sälja.');
+    if (reservationId !== null && selectedReservationId !== null && selectedReservationId !== reservationId) {
+      setError('Öppna den aktuella kundreservationen innan du säljer från den.');
       return;
     }
-    setSaleReservation(null);
-    setSaleFromExternalReservation(true);
-    setSaleForm({
-      customer_name: '', customer_company: '', customer_phone: '', customer_email: '',
-      sale_date: new Date().toLocaleDateString('sv-SE'),
-      quantity: String(Math.min(Math.max(1, Number.parseInt(saleQuantity, 10) || 1), Number(selected.external_reserved_quantity || 0))),
-      note: ''
-    });
-    setShowSaleForm(true); setError('');
-  }
-
-  async function submitMachineSale(event) {
-    event.preventDefault();
-    if (!selected || saving) return;
-    const amount = Number.parseInt(saleForm.quantity, 10);
+    if (reservationId !== null && selectedReservationId === null && selectedDetailMode !== 'reservation') {
+      setError('Öppna kundreservationen från Reserverade innan du säljer från den.');
+      return;
+    }
+    const amount = Number.parseInt(saleQuantity, 10);
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att sälja.'); return; }
-    if (!saleForm.customer_name.trim() || !saleForm.customer_phone.trim()) { setError('Kundnamn och telefonnummer måste anges.'); return; }
-    setSaving(true); setError('');
-    const saleRpc = saleFromExternalReservation ? 'record_external_reserved_machine_sale' : 'record_machine_sale';
-    const saleArgs = {
-      p_machine_id: selected.id, p_quantity: amount, p_customer_name: saleForm.customer_name.trim(),
-      p_customer_phone: saleForm.customer_phone.trim(), p_customer_company: saleForm.customer_company || null,
-      p_customer_email: saleForm.customer_email || null, p_sale_date: saleForm.sale_date || null,
-      p_note: saleForm.note || null
-    };
-    if (!saleFromExternalReservation) saleArgs.p_reservation_id = saleReservation?.id || null;
-    const { error: saleError } = await supabase.rpc(saleRpc, saleArgs);
-    if (saleError) setError('Försäljningen kunde inte registreras: ' + saleError.message);
-    else {
-      setShowSaleForm(false); setSaleReservation(null); setSaleFromExternalReservation(false); setSaleQuantity('1');
-      await Promise.all([loadMachines(), loadReservations()]);
-      await loadMachineDetails(selected, selectedReservationId);
-    }
-    setSaving(false);
-  }
-
-  async function reverseMachineSale(sale) {
-    if (!sale?.id || saving) return;
-    if (!window.confirm(`Vill du återföra försäljningen av ${sale.quantity} st till lagret? Försäljningsposten sparas som återförd i historiken.`)) return;
-    setSaving(true); setError('');
-    const { error: reverseError } = await supabase.rpc('reverse_machine_sale', { p_sale_id: sale.id });
-    if (reverseError) setError('Försäljningen kunde inte återföras: ' + reverseError.message);
-    else { await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected, selectedReservationId); }
+    setError(''); setSaving(true);
+    const { error } = await supabase.rpc('sell_machine_quantity', {
+      p_machine_id: selected.id, p_quantity: amount, p_reservation_id: reservationId
+    });
+    if (error) setError(error.message);
+    else { setSaleQuantity('1'); await Promise.all([loadMachines(), loadReservations()]); await loadMachineDetails(selected, selectedReservationId); }
     setSaving(false);
   }
 
@@ -1558,11 +1397,7 @@ export default function App() {
   const date = value => value ? new Date(value).toLocaleDateString('sv-SE') : '–';
   const dateTime = value => value ? new Date(value).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }) : '';
   const initials = name => (name || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase() || '').join('') || '?';
-  const onlineEntries = onlineUserIds.flatMap(id => {
-    const profile = profiles.find(item => item.id === id);
-    const sessions = onlineSessions.filter(item => item.user_id === id);
-    return sessions.length ? sessions.map((item, index) => ({ ...item, profile, key: `${id}-${item.session_id}-${index}` })) : [{ user_id: id, profile, client_type: 'Återansluter…', device_type: 'Enhet ej tillgänglig', key: `${id}-grace` }];
-  }).sort((a, b) => (a.profile?.full_name || '').localeCompare(b.profile?.full_name || '', 'sv'));
+  const onlineProfiles = onlineUserIds.map(id => profiles.find(profile => profile.id === id)).filter(Boolean).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '', 'sv'));
 
   if (session && passwordFlow) return <main className="login"><div className="brand">MÖRE<span /></div><section className="login-card"><p className="eyebrow">KONTOINSTÄLLNING</p><h1>{passwordFlow === 'recovery' ? 'Nytt lösenord' : 'Skapa ditt lösenord'}</h1><p className="muted">{passwordNotice || 'Välj ett personligt lösenord för ditt konto.'}</p><form onSubmit={saveNewPassword}><label>Nytt lösenord<input type="password" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={8} required /></label><label>Bekräfta lösenord<input type="password" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} minLength={8} required /></label><button className="primary wide" disabled={passwordBusy}>{passwordBusy ? 'Sparar…' : 'Spara lösenord'}</button></form>{error && <p className="error">{error}</p>}</section></main>;
 
@@ -1576,17 +1411,6 @@ export default function App() {
       .app-shell .topbar,.app-shell .main-tabs,.app-shell .hero,.app-shell .toolbar,.app-shell .stats,.app-shell .machine-grid{min-width:0;max-width:100%;}
       .app-shell .search{min-width:0;width:100%;}
       .app-shell .search input{min-width:0;}
-      .machine-search-intro{margin:0 0 9px;max-width:560px;}
-      .machine-search-intro strong{display:block;color:#eee;font-size:14px;font-weight:700;margin-bottom:3px;}
-      .machine-search-intro p{margin:0;color:#999;font-size:12px;line-height:1.45;}
-      .machine-search-form{display:flex;align-items:center;gap:8px;width:min(100%,560px);}
-      .machine-search-form .search{flex:1;min-width:0;}
-      .machine-search-form .search input{width:100%;}
-      .machine-search-clear{flex:0 0 auto;background:transparent;border:1px solid #444;color:#bbb;border-radius:9px;padding:10px 12px;cursor:pointer;}
-      .machine-search-submit{flex:0 0 auto;padding:10px 18px;min-width:82px;}
-      .machine-search-count{margin:12px 0 14px;color:#aaa;font-size:13px;}
-      .machine-show-more{display:flex;justify-content:center;width:100%;max-width:560px;margin:16px auto 28px;padding:13px;}
-      .machine-search-intro{margin-top:20px;}
       .app-shell .stats>div{min-width:0;}
       .app-shell .machine-card{min-width:0;width:100%;}
       @media(max-width:520px){
@@ -1611,7 +1435,7 @@ export default function App() {
       .home-quick-action{display:flex;align-items:center;gap:5px;flex:0 0 auto;color:#d94a50;font-size:11px;font-weight:700}
       .home-quick-row:focus-visible{outline:2px solid #d92730;outline-offset:2px;border-radius:5px}
       @media(min-width:700px){.home-quick-overview{max-width:680px}.home-quick-row{padding:12px 3px}}
-      .home-notices{margin:0;max-width:680px;padding:0}.home-notices-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;padding:11px 13px;border:1px solid #7f252b;border-radius:10px;background:linear-gradient(110deg,#4a171b,#252020)}.home-notices-head h2{display:flex;align-items:center;gap:9px;margin:0;color:#fff;font-size:14px;font-weight:800;letter-spacing:.07em}.home-notices-head h2 svg{color:#ff6269}.home-notice-card{padding:14px 15px;margin:9px 0;border:1px solid #3d3d3d;border-left:5px solid #4d91c9;border-radius:10px;background:linear-gradient(110deg,#242424,#1d1d1d);box-shadow:0 3px 12px #0003}.home-notice-card.important{border-color:#713238;border-left-color:#ed343d;background:linear-gradient(110deg,#321d20,#211d1e)}.home-notice-card h3{margin:8px 0 5px;font-size:16px;font-weight:750;color:#fff}.home-notice-card p{margin:0;color:#e0e0e0;font-size:13px;line-height:1.5;white-space:pre-wrap}.home-notice-meta{display:flex;align-items:center;gap:8px;color:#aaa;font-size:10px;flex-wrap:wrap}.home-notice-meta strong{padding:4px 8px;border-radius:5px;background:#18344a;color:#8fcaff;font-size:10px;letter-spacing:.06em}.home-notice-card.important .home-notice-meta strong{background:#64242a;color:#ffb4b8}.home-notice-actions{display:flex;gap:8px;margin-top:9px}.home-notice-form{display:grid;gap:9px;padding:13px;margin:10px 0;border:1px solid #444;border-radius:10px;background:#1c1c1c}.home-notice-form input,.home-notice-form textarea{width:100%;box-sizing:border-box}.home-notice-form textarea{min-height:76px}.home-notice-form label{display:flex;align-items:center;gap:8px;font-size:12px;color:#ddd}
+      .home-notices{margin:0 0 24px;max-width:680px;padding:0 0 2px}.home-notices-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;padding:11px 13px;border:1px solid #7f252b;border-radius:10px;background:linear-gradient(110deg,#4a171b,#252020)}.home-notices-head h2{display:flex;align-items:center;gap:9px;margin:0;color:#fff;font-size:14px;font-weight:800;letter-spacing:.07em}.home-notices-head h2 svg{color:#ff6269}.home-notice-card{padding:14px 15px;margin:9px 0;border:1px solid #3d3d3d;border-left:5px solid #4d91c9;border-radius:10px;background:linear-gradient(110deg,#242424,#1d1d1d);box-shadow:0 3px 12px #0003}.home-notice-card.important{border-color:#713238;border-left-color:#ed343d;background:linear-gradient(110deg,#321d20,#211d1e)}.home-notice-card h3{margin:8px 0 5px;font-size:16px;font-weight:750;color:#fff}.home-notice-card p{margin:0;color:#e0e0e0;font-size:13px;line-height:1.5;white-space:pre-wrap}.home-notice-meta{display:flex;align-items:center;gap:8px;color:#aaa;font-size:10px;flex-wrap:wrap}.home-notice-meta strong{padding:4px 8px;border-radius:5px;background:#18344a;color:#8fcaff;font-size:10px;letter-spacing:.06em}.home-notice-card.important .home-notice-meta strong{background:#64242a;color:#ffb4b8}.home-notice-actions{display:flex;gap:8px;margin-top:9px}.home-notice-form{display:grid;gap:9px;padding:13px;margin:10px 0;border:1px solid #444;border-radius:10px;background:#1c1c1c}.home-notice-form input,.home-notice-form textarea{width:100%;box-sizing:border-box}.home-notice-form textarea{min-height:76px}.home-notice-form label{display:flex;align-items:center;gap:8px;font-size:12px;color:#ddd}
       .main-tabs{display:grid;gap:10px;padding:12px 0 18px;border-bottom:1px solid #303030}.main-tabs.seller-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.main-tabs.admin-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.main-tabs button{min-width:0;width:100%;padding:11px 8px}
       .push-notification-button{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 11px;font-size:12px;white-space:nowrap}
       .push-notification-button:disabled{opacity:.75;cursor:default}
@@ -1622,7 +1446,7 @@ export default function App() {
       .online-presence-wrap{position:relative;display:flex;align-items:center;flex:0 0 auto}
       .online-presence-trigger{display:inline-flex;align-items:center;gap:5px;padding:5px 3px;border:0;background:transparent;color:#929292;font-size:11px;white-space:nowrap;cursor:pointer}
       .online-presence-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#43ad70;box-shadow:0 0 5px #43ad7040}
-      .online-presence-popover{position:absolute;z-index:1000;top:calc(100% + 10px);left:0!important;right:auto!important;width:220px!important;max-width:min(220px,calc(100vw - 32px))!important;min-width:0;box-sizing:border-box;padding:10px 12px;border:1px solid #383838;border-radius:9px;background:#1c1c1c;box-shadow:0 8px 24px #0008;overflow-wrap:anywhere}.online-presence-person{min-width:0}.online-presence-person>span:last-child{min-width:0;overflow-wrap:anywhere}.online-presence-details{display:flex;flex-direction:column;gap:2px}.online-presence-details strong{color:#e5e5e5;font-size:11px;font-weight:650}.online-presence-details small{color:#969696;font-size:10px;line-height:1.3}
+      .online-presence-popover{position:absolute;z-index:1000;top:calc(100% + 10px);left:0!important;right:auto!important;width:220px!important;max-width:min(220px,calc(100vw - 32px))!important;min-width:0;box-sizing:border-box;padding:10px 12px;border:1px solid #383838;border-radius:9px;background:#1c1c1c;box-shadow:0 8px 24px #0008;overflow-wrap:anywhere}.online-presence-person{min-width:0}.online-presence-person>span:last-child{min-width:0;overflow-wrap:anywhere}
       .online-presence-popover strong{display:block;margin:0 0 7px;color:#ddd;font-size:11px;font-weight:700}
       .online-presence-person{display:flex;align-items:center;gap:8px;padding:6px 0;color:#c9c9c9;font-size:12px}
       .online-presence-initials{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#303943;color:#e4e9ed;font-size:9px;font-weight:800}
@@ -1683,18 +1507,6 @@ export default function App() {
       .admin-refresh-button{display:inline-flex;align-items:center;gap:7px;background:#242424;color:#eee;border:1px solid #555;border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
       .admin-refresh-button:disabled{opacity:.55;cursor:wait}
       .auth-activity-section{margin-top:18px;padding-top:16px;border-top:1px solid #333}
-      .deleted-machines-section{margin-top:34px!important;padding-top:16px!important;border-top:1px solid #383838}
-      .deleted-machines-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;list-style:none;color:#aaa;font-size:14px;font-weight:700}
-      .deleted-machines-summary::-webkit-details-marker{display:none}
-      .deleted-machines-summary>span{display:inline-flex;align-items:center;gap:9px}
-      .deleted-machines-summary>small{display:inline-flex;align-items:center;justify-content:center;min-width:25px;height:25px;padding:0 7px;border:1px solid #555;border-radius:20px;color:#bbb;font-size:12px}
-      .deleted-machines-content{margin-top:14px}
-      .deleted-machines-content>.admin-users-heading{align-items:center}
-      .deleted-machines-content>.admin-users-heading>.muted{margin:0;max-width:560px;font-size:12px}
-      .deleted-machine-row{padding:9px 0!important}
-      .deleted-machine-row .admin-user-main strong{font-size:13px}
-      .deleted-machine-row .admin-user-main small{font-size:11px}
-      .admin-restore-button{padding:7px 10px!important;border:1px solid #713535!important;border-radius:7px!important;background:#321b1b!important;color:#ff9a9a!important;font:inherit;font-size:12px!important}
       .auth-activity-list{margin-top:12px}
       .auth-activity-row{display:grid;grid-template-columns:32px minmax(0,1fr);align-items:center;column-gap:12px;min-height:58px;padding:11px 0;border-bottom:1px solid #333}
       .auth-activity-row>div{display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -1788,16 +1600,6 @@ export default function App() {
       .reservation-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0;padding:14px 0;border-bottom:1px solid #383838}
       .reservation-row>strong{font-size:17px;overflow-wrap:anywhere}
       .reservation-row>small{display:block;color:#aaa;line-height:1.5;overflow-wrap:anywhere}
-      .customer-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 14px;margin:3px 0 8px;padding:12px;background:#202020;border:1px solid #353535;border-radius:9px;min-width:0}
-      .customer-detail-field{display:grid;gap:3px;min-width:0}
-      .customer-detail-field.full{grid-column:1/-1}
-      .customer-detail-field span{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#999;font-weight:700}
-      .customer-detail-field strong,.customer-detail-field a{font-size:14px;color:#f1f1f1;overflow-wrap:anywhere;text-decoration:none}
-      .customer-detail-field a{color:#f18b8e}
-      .sale-history-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-      .sale-history-heading .sale-status{font-size:11px;letter-spacing:.06em;font-weight:800;padding:4px 8px;border-radius:20px;background:#263b2d;color:#85d69b}
-      .sale-history-heading .sale-status.reversed{background:#3a2929;color:#e8a0a0}
-      @media(max-width:420px){.customer-detail-grid{grid-template-columns:minmax(0,1fr)}}
       .reservation-row>label.full{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;margin:2px 0}
       .reservation-row>button{width:100%;min-height:44px;display:flex;align-items:center;justify-content:center;gap:7px;white-space:normal}
       .detail-section label.primary,.detail-section label.button{padding:10px 14px;border-radius:8px}
@@ -1840,14 +1642,6 @@ export default function App() {
       .reservation-quantity{display:grid;gap:2px;text-align:right;white-space:nowrap}.reservation-quantity strong{font-size:25px;color:#fff}.reservation-quantity span{font-size:12px;color:#aaa}
       .reservation-meta{display:flex;flex-wrap:wrap;align-items:center;gap:9px 17px;padding:14px 0;color:#aaa;font-size:13px}.reservation-meta>span{display:inline-flex;align-items:center;gap:6px}.reservation-seller{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:7px 11px;border:1px solid #51413b;border-left:3px solid #d64a3b;border-radius:7px;background:#211b19;min-width:145px}.reservation-seller-label{font-size:11px;line-height:1.2;font-weight:800;letter-spacing:.08em;color:#d8a69d}.reservation-seller strong{font-size:15px;line-height:1.3;color:#fff;overflow-wrap:anywhere}.detail-reservation-sellers{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:14px 0 18px}.detail-reservation-seller{display:flex;align-items:baseline;flex-wrap:wrap;gap:7px 12px;width:fit-content;margin:0;padding:0}.detail-reservation-seller .reservation-seller-label{font-size:14px;line-height:1.35;font-weight:800;letter-spacing:.045em;color:#fff}.detail-reservation-seller strong{font-size:20px;line-height:1.4;color:#fff;font-weight:800;overflow-wrap:anywhere}
       .reservation-deadline{display:inline-flex;align-items:center;gap:9px;padding:8px 11px;border:1px solid #8f3030;border-left:4px solid #e14a4a;border-radius:7px;background:#2a1717;color:#fff}.reservation-deadline>span{display:flex;flex-direction:column;gap:2px}.reservation-deadline strong{font-size:10px;letter-spacing:.08em;color:#ff9a9a}.reservation-deadline b{font-size:16px;line-height:1.25;color:#fff}.detail-deadline{margin:6px 0 2px;width:fit-content}.reservation-card .secondary-action{width:100%}
-      .machine-compact-list{display:grid;gap:0;border:1px solid #363636;border-radius:12px;overflow:hidden;background:#191919}
-      .machine-compact-row{position:relative;display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;padding:15px 42px 15px 16px;text-align:left;color:#f4f4f4;background:transparent;border:0;border-bottom:1px solid #363636;cursor:pointer}
-      .machine-compact-row:last-child{border-bottom:0}.machine-compact-row:active{background:#242424}
-      .machine-compact-heading{display:grid;gap:5px;min-width:0}.machine-compact-heading>strong{font-size:15px;line-height:1.35;font-weight:750;overflow-wrap:anywhere}
-      .machine-compact-description{font-size:12px;line-height:1.35;color:#aaa;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
-      .machine-compact-meta{display:flex;flex-wrap:wrap;gap:4px 10px;color:#aaa;font-size:11px;line-height:1.3}
-      .machine-compact-arrow{position:absolute;right:15px;top:50%;transform:translateY(-50%);font-size:25px;color:#888}
-      @media(max-width:520px){.machine-compact-row{padding:13px 36px 13px 13px}.machine-compact-heading>strong{font-size:14px}.machine-compact-meta{font-size:10px;gap:4px 8px}}
       .machine-quantity-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:13px 0 5px;padding:11px 0;border-top:1px solid #333;border-bottom:1px solid #333}
       .machine-quantity-summary span{display:grid;gap:2px;min-width:0}.machine-quantity-summary strong{font-size:19px;color:#f4f4f4}.machine-quantity-summary small{font-size:11px;color:#aaa}
       .incoming-note{margin:7px 0 0;color:#aaa;font-size:12px}
@@ -1879,47 +1673,16 @@ export default function App() {
       @media(min-width:701px){.page-toolbar{grid-template-columns:minmax(0,1fr) auto;align-items:center}.page-summary{justify-content:flex-end}.reservation-card .secondary-action{width:auto}}
       @media(max-width:390px){.main-tabs{gap:6px}.main-tabs button{font-size:12px;gap:5px}.inventory-controls .quantity-control{grid-template-columns:minmax(0,1fr) 82px}.inventory-controls .receive-panel label{grid-template-columns:minmax(0,1fr) 82px}}
 
-      /* Kompakt startsida: sökningen ska synas direkt på mobil. */
-      @media(max-width:520px){
-        .home-notices{margin:0!important;padding:0!important}
-        .home-notices-head{margin-bottom:6px!important;padding:8px 10px!important}
-        .home-notice-card{padding:10px 12px!important;margin:5px 0!important}
-        .home-notice-card h3{margin:5px 0 3px!important;font-size:14px!important}
-        .home-notice-card p{font-size:12px!important;line-height:1.35!important}
-        .home-notice-actions{margin-top:6px!important}
-        .home-notices + .hero{margin-top:8px!important}
-        .app-shell .hero{margin:8px 0!important;gap:7px!important}
-        .app-shell .hero h1{font-size:30px!important;margin:1px 0 3px!important}
-        .app-shell .hero .eyebrow{margin:0 0 3px!important;font-size:9px!important}
-        .app-shell .hero .muted{margin:2px 0 0!important;font-size:13px!important;line-height:1.3!important}
-        .app-shell .hero>button{min-height:44px!important;padding:8px 12px!important}
-        .machine-search-intro{margin:8px 0 5px!important}
-        .machine-search-intro strong{font-size:13px!important;margin-bottom:1px!important}
-        .machine-search-intro p{font-size:11px!important;line-height:1.3!important}
-        .machine-search-form{gap:6px!important}
-        .machine-search-form .search,.machine-search-form .search input{min-height:42px!important}
-        .machine-search-submit{min-height:42px!important;padding:7px 12px!important}
-        .app-shell .stats{gap:7px!important;margin:9px 0 12px!important}
-        .app-shell .stats>div{padding:9px 11px!important;min-height:64px!important}
-      }
     `}</style>
-    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><div className="online-presence-wrap"><button type="button" className="online-presence-trigger" onClick={() => setShowOnlineUsers(value => !value)} aria-expanded={showOnlineUsers} aria-label={`${onlineUserIds.length} online – visa inloggade`} title="Visa vilka som är online"><span className="online-presence-dot" />{onlineUserIds.length} online</button>{showOnlineUsers && <div className="online-presence-popover"><strong>{onlineUserIds.length} online</strong>{onlineEntries.length ? onlineEntries.map(entry => <div className="online-presence-person" key={entry.key}><span className="online-presence-initials">{initials(entry.profile?.full_name)}</span><span className="online-presence-details"><strong>{entry.profile?.full_name || 'Medarbetare'}</strong><small>{entry.client_type} · {entry.device_type}</small></span></div>) : <div className="online-presence-person">Hämtar namn…</div>}</div>}</div>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={refreshAppData} disabled={appRefreshBusy} aria-label="Uppdatera hela appen" title={appRefreshBusy ? "Uppdaterar innehållet…" : "Uppdatera hela appen"}><RefreshCw size={18} className={appRefreshBusy ? "refresh-spinning" : ""} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
-    <nav className={`main-tabs ${isAdmin ? 'admin-tabs' : 'seller-tabs'}`}><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); loadDeletedMachines(); loadDevelopmentLog(); }}><Users size={16} /> Administration</button>}</nav>
+    <header className="topbar"><div className="brand">MÖRE<span /></div><div className="top-actions"><span className="staff">PERSONAL</span><div className="online-presence-wrap"><button type="button" className="online-presence-trigger" onClick={() => setShowOnlineUsers(value => !value)} aria-expanded={showOnlineUsers} aria-label={`${onlineUserIds.length} online – visa inloggade`} title="Visa vilka som är online"><span className="online-presence-dot" />{onlineUserIds.length} online</button>{showOnlineUsers && <div className="online-presence-popover"><strong>{onlineUserIds.length} online</strong>{onlineProfiles.length ? onlineProfiles.map(profile => <div className="online-presence-person" key={profile.id}><span className="online-presence-initials">{initials(profile.full_name)}</span><span>{profile.full_name || 'Medarbetare'}</span></div>) : <div className="online-presence-person">Hämtar namn…</div>}</div>}</div>{isSuperAdminAccount && hasAdminRole && <button type="button" className="secondary-action seller-preview-button" onClick={() => { setSellerPreviewMode(value => !value); setShowAdmin(false); setShowInternInfo(false); setShowReservations(false); setError(''); }} title={sellerPreviewMode ? 'Återgå till administratörsvyn' : 'Visa appen som en säljare'}>{sellerPreviewMode ? 'Återgå till admin' : 'Visa som säljare'}</button>}<button className="primary push-notification-button" onClick={enablePushNotifications} disabled={pushBusy || pushEnabled} title={pushEnabled ? 'Pushnotiser är aktiverade på den här enheten' : 'Aktivera pushnotiser på den här enheten'}>{pushEnabled ? <BellRing size={16} /> : <Bell size={16} />}{pushBusy ? 'Aktiverar…' : pushEnabled ? 'Notiser aktiverade' : 'Aktivera notiser'}</button><button className="icon-btn" onClick={refreshAppData} disabled={appRefreshBusy} aria-label="Uppdatera hela appen" title={appRefreshBusy ? "Uppdaterar innehållet…" : "Uppdatera hela appen"}><RefreshCw size={18} className={appRefreshBusy ? "refresh-spinning" : ""} /></button><button className="icon-btn" onClick={signOut} aria-label="Logga ut"><LogOut size={18} /></button></div></header>
+    <nav className={`main-tabs ${isAdmin ? 'admin-tabs' : 'seller-tabs'}`}><button className={!showInternInfo && !showReservations && !showAdmin ? 'active' : ''} onClick={() => { setShowInternInfo(false); setShowReservations(false); setShowAdmin(false); setFilter('overview'); }}><Package size={16} /> Maskiner</button><button className={showInternInfo ? 'active' : ''} onClick={openInternInfo}><Megaphone size={16} /> Interninfo{unreadTotalCount > 0 && <span className="tab-unread-badge">{unreadTotalCount > 99 ? '99+' : unreadTotalCount}</span>}</button>{isAdmin && <button className={showAdmin ? 'active' : ''} onClick={() => { setShowAdmin(true); setShowInternInfo(false); setShowReservations(false); setError(''); loadAdminUsers(); }}><Users size={16} /> Administration</button>}</nav>
     {pushMessage && <p className="muted" role="status" style={{ margin: '10px 0', fontSize: 13 }}>{pushMessage}</p>}
     {appRefreshMessage && <p className="muted" role="status" style={{ margin: '8px 0', fontSize: 12, color: '#9bd5a5' }}>{appRefreshMessage}</p>}
     {!showReservations && !showInternInfo && !showAdmin && <>
     <section className={`home-quick-overview ${homeNotices.length === 0 && !isAdmin ? 'compact-after' : ''}`} aria-label="Min översikt">
       <button type="button" className="home-quick-heading home-quick-toggle" aria-expanded={homeOverviewExpanded} onClick={() => setHomeOverviewExpanded(v => !v)}><span>MIN ÖVERSIKT</span><ChevronDown size={16} className={homeOverviewExpanded ? 'expanded' : ''} /></button>
       {homeOverviewExpanded && <div className="home-quick-content">
-      <button type="button" className="home-quick-row" onClick={() => { setShowInternInfo(false); setShowReservations(true); setShowAdmin(false); setError(''); loadReservations(); }}>
-        <span className="home-quick-icon"><CalendarDays size={18} /></span>
-        <span className="home-quick-copy">
-          <strong>Mina reservationer</strong>
-          <small>{reservations.filter(r => r.reserved_by === session?.user?.id).length} aktiva reservationer</small>
-        </span>
-        <span className="home-quick-action">Visa <span aria-hidden="true">›</span></span>
-      </button>
-      {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={openInternInfo}>
+            {announcements.length > 0 && <button type="button" className="home-quick-row" onClick={openInternInfo}>
         <span className="home-quick-icon"><Megaphone size={18} /></span>
         <span className="home-quick-copy">
           <strong>Senaste Interninfo {unreadTotalCount > 0 ? `· ${unreadTotalCount} olästa` : ''}</strong>
@@ -1950,9 +1713,9 @@ export default function App() {
       <section className="hero page-hero"><div><p className="eyebrow">FÖRSÄLJNING & BOKNING</p><h1>Reservationer</h1><p className="muted">Överblick över kundernas bokade maskiner och återstående antal.</p></div><button className="secondary-action" onClick={loadReservations}><RefreshCw size={16}/> Uppdatera</button></section>
       <section className="page-toolbar"><div className="search"><Search size={18}/><input value={reservationSearch} onChange={e => setReservationSearch(e.target.value)} placeholder="Sök kund, maskin eller ansvarig…"/></div><div className="page-summary"><strong>{reservations.reduce((sum,r)=>sum+Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)),0)} st</strong><span>reserverade totalt</span><strong>{reservations.length}</strong><span>aktiva reservationer</span></div></section>
       {error && <div className="error-banner">{error}</div>}
-      {reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,r.customer_company,r.customer_phone,r.customer_email,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).length === 0
+      {reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).length === 0
         ? <div className="empty"><CalendarDays size={32}/><h3>Inga aktiva reservationer</h3><p>Nya reservationer visas här när de registreras.</p></div>
-        : <section className="reservation-list">{reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,r.customer_company,r.customer_phone,r.customer_email,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).map(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const remaining=Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)); return <article className="reservation-card" key={r.id}><div className="reservation-card-main"><div className="reservation-card-heading"><p className="eyebrow">RESERVERAD MASKIN</p><h2>{machine ? `${machine.brand || ''} ${machine.model || ''}`.trim() || 'Maskin saknar namn' : 'Maskin saknas'}</h2>{machine?.machine_number && <p className="muted reservation-machine-number">Maskinnummer: {machine.machine_number}</p>}<div className="reservation-customer"><span>KUND</span><strong>{r.customer_name}</strong>{r.customer_company && <small>{r.customer_company}</small>}{r.customer_phone && <small>{r.customer_phone}</small>}{r.customer_email && <small>{r.customer_email}</small>}</div></div><div className="reservation-quantity"><strong>{remaining} st</strong><span>kvar att leverera</span></div></div><div className="reservation-meta"><span><CalendarDays size={15}/> {date(r.reservation_date)}</span>{r.reservation_end_date && <span className="reservation-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></span>}<div className="reservation-seller"><span className="reservation-seller-label">ANSVARIG SÄLJARE</span><strong>{seller?.full_name || 'Ansvarig saknas'}</strong></div><span>Ursprungligt antal: {r.quantity || 1} st</span>{Number(r.fulfilled_quantity||0)>0 && <span>Redan sålda: {r.fulfilled_quantity} st</span>}</div>{machine && <button className="secondary-action" onClick={() => { setShowReservations(false); loadMachineDetails(machine, r.id); }}><Package size={15}/> Öppna maskin och hantera reservation</button>}</article>; })}</section>}
+        : <section className="reservation-list">{reservations.filter(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const q=reservationSearch.trim().toLowerCase(); return !q || [r.customer_name,machine?.brand,machine?.model,machine?.machine_number,seller?.full_name].some(v=>String(v||'').toLowerCase().includes(q)); }).map(r => { const machine=machines.find(m=>m.id===r.machine_id); const seller=profiles.find(p=>p.id===r.reserved_by); const remaining=Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)); return <article className="reservation-card" key={r.id}><div className="reservation-card-main"><div className="reservation-card-heading"><p className="eyebrow">RESERVERAD MASKIN</p><h2>{machine ? `${machine.brand || ''} ${machine.model || ''}`.trim() || 'Maskin saknar namn' : 'Maskin saknas'}</h2>{machine?.machine_number && <p className="muted reservation-machine-number">Maskinnummer: {machine.machine_number}</p>}<div className="reservation-customer"><span>KUND</span><strong>{r.customer_name}</strong></div></div><div className="reservation-quantity"><strong>{remaining} st</strong><span>kvar att leverera</span></div></div><div className="reservation-meta"><span><CalendarDays size={15}/> {date(r.reservation_date)}</span>{r.reservation_end_date && <span className="reservation-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></span>}<div className="reservation-seller"><span className="reservation-seller-label">ANSVARIG SÄLJARE</span><strong>{seller?.full_name || 'Ansvarig saknas'}</strong></div><span>Ursprungligt antal: {r.quantity || 1} st</span>{Number(r.fulfilled_quantity||0)>0 && <span>Redan sålda: {r.fulfilled_quantity} st</span>}</div>{machine && <button className="secondary-action" onClick={() => { setShowReservations(false); loadMachineDetails(machine, r.id); }}><Package size={15}/> Öppna maskin och hantera reservation</button>}</article>; })}</section>}
     </> : showInternInfo ? <>
       <section className="hero"><div><p className="eyebrow">INTERN KOMMUNIKATION</p><h1>Interninfo</h1><p className="muted">Nyheter och privata meddelanden inom teamet.</p></div><div style={{display:'flex',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>{internInfoMode === 'news' ? <>{isAdmin && <button type="button" onClick={() => { const next = !showDeletedAnnouncements; setShowDeletedAnnouncements(next); loadAnnouncements(next); }}>{showDeletedAnnouncements ? 'Visa aktiva inlägg' : 'Visa borttagna'}</button>}<button className="primary add-btn" onClick={() => setShowAnnouncementForm(v => !v)}><Plus size={18} /> Skriv meddelande</button></> : <button className="primary add-btn" onClick={() => { setShowNewPrivateMessage(v => !v); setSelectedPrivateConversation(null); }}><Plus size={18} /> Skriv meddelande</button>}</div></section>
       <div className="interninfo-switch"><button type="button" className={internInfoMode === 'news' ? 'active' : ''} onClick={() => { setInternInfoMode('news'); setSelectedPrivateConversation(null); setShowNewPrivateMessage(false); setShowAnnouncementForm(true); }}><Megaphone size={16}/> Information till alla {unreadAnnouncementCount > 0 && <span className="tab-unread-badge">{unreadAnnouncementCount}</span>}</button><button type="button" className={internInfoMode === 'private' ? 'active' : ''} onClick={() => { setInternInfoMode('private'); setShowAnnouncementForm(false); setSelectedPrivateConversation(null); setShowNewPrivateMessage(true); loadPrivateConversations(); }}><Mail size={16}/> Privata meddelanden {unreadPrivateCount > 0 && <span className="tab-unread-badge">{unreadPrivateCount}</span>}</button></div>
@@ -1997,24 +1760,14 @@ export default function App() {
           })}
         </aside>
       </section>}
-    </> : showAdmin && isAdmin ? <>    {showAdmin && isAdmin && <section className="admin-page page-panel"><div className="page-panel-heading"><div><p className="eyebrow">SYSTEMINSTÄLLNINGAR</p><h1><Users size={24} /> Administration</h1><p className="muted">Hantera personal, behörigheter och konton.</p></div></div><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p><div className="admin-users-heading"><span className="muted">{adminUsers.filter(user => user.is_active !== false).length} aktiva medarbetare</span>{adminUsers.some(user => user.is_active === false) && <button type="button" className="admin-refresh-button" onClick={() => setShowInactiveUsers(value => !value)}>{showInactiveUsers ? 'Dölj avaktiverade' : `Visa avaktiverade (${adminUsers.filter(user => user.is_active === false).length})`}</button>}</div>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.filter(user => showInactiveUsers || user.is_active !== false).map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}<div className="detail-section auth-activity-section"><button type="button" className="admin-refresh-button" onClick={() => { const next = !showAuthActivity; setShowAuthActivity(next); if (next) loadAuthActivity(); }}><History size={15} /> {showAuthActivity ? 'Dölj inloggningshistorik' : 'Visa inloggningshistorik'}</button>{showAuthActivity && <div className="auth-activity-list">{authActivityLoading ? <p className="muted">Hämtar historik…</p> : authActivity.length === 0 ? <p className="muted">Ingen inloggningshistorik ännu.</p> : authActivity.map(item => <div className="auth-activity-row" key={item.id}><span className={item.event_type === 'login' ? 'auth-activity-icon login' : 'auth-activity-icon logout'}>{item.event_type === 'login' ? <LogIn size={16} /> : <LogOut size={16} />}</span><div><strong>{item.profiles?.full_name || 'Okänd användare'}</strong><small>{item.event_type === 'login' ? 'Loggade in' : 'Loggade ut'} · {dateTime(item.created_at)}</small></div></div>)}</div>}</div><details className="detail-section deleted-machines-section"><summary className="deleted-machines-summary"><span><Trash2 size={17} /> Borttagna maskiner</span><small>{deletedMachines.length}</small></summary><div className="deleted-machines-content"><div className="admin-users-heading"><p className="muted">Maskiner som tagits bort från lageröversikten. Historik och reservationer sparas.</p><button type="button" className="admin-refresh-button" onClick={loadDeletedMachines} disabled={deletedMachinesLoading}><RefreshCw size={14} /> {deletedMachinesLoading ? 'Hämtar…' : 'Uppdatera'}</button></div>{deletedMachinesLoading ? <p className="muted">Hämtar borttagna maskiner…</p> : deletedMachines.length === 0 ? <p className="muted">Inga borttagna maskiner hittades.</p> : deletedMachines.map(machine => <div className="history-item admin-user-row deleted-machine-row" key={machine.id}><div className="admin-user-main"><strong>{[machine.article_code ? `Artikel ${machine.article_code}` : machine.machine_number, machine.brand, machine.model].filter(Boolean).join(' · ') || 'Maskin utan namn'}</strong><small>{dateTime(machine.updated_at)}</small></div><div className="admin-user-controls"><button type="button" className="admin-restore-button" disabled={!!restoringMachineId} onClick={() => restoreMachine(machine)}>{restoringMachineId === machine.id ? 'Återställer…' : 'Återställ'}</button></div></div>)}</div></details>
-      <details className="detail-section deleted-machines-section" onToggle={e => { if (e.currentTarget.open) loadDevelopmentLog(); }}>
-        <summary className="deleted-machines-summary"><span>Versionshistorik</span><small>{releaseNotes.length}</small></summary>
-        <div className="deleted-machines-content">
-          {releaseNotes.length === 0 ? <p className="muted">Inga versioner registrerade ännu.</p> : releaseNotes.map(note => <article className="history-item" key={note.id}><strong>{note.title}</strong><small>{new Date(note.release_date + 'T12:00:00').toLocaleDateString('sv-SE')}</small><p style={{whiteSpace:'pre-wrap'}}>{note.changes}</p></article>)}
-        </div>
-      </details>
-</div></section>}</> : <>
-    <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, reservationer och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till maskin</button></section>
-    <div className="machine-search-intro"><strong>Hitta rätt maskin</strong><p>Sök på artikelkod, maskinnummer, fabrikat eller modell. Du kan söka på hela eller delar av artikelkoden eller namnet.</p></div>
-    <section className="toolbar"><form className="machine-search-form" onSubmit={e => { e.preventDefault(); setSearch(searchInput.trim()); setVisibleMachineCount(20); }}><div className="search"><Search size={18} /><input placeholder="Artikelkod, maskinnummer eller modell" aria-label="Sök maskiner" value={searchInput} onChange={e => setSearchInput(e.target.value)} /></div>{searchInput && <button type="button" className="machine-search-clear" aria-label="Rensa sökning" onClick={() => { setSearchInput(''); setSearch(''); setVisibleMachineCount(20); setFilter('overview'); }}>Rensa</button>}<button className="primary machine-search-submit" type="submit">Sök</button></form></section>
-
-    <section className="stats" style={isSearchingMachines ? {display:'none'} : undefined}>
+    </> : showAdmin && isAdmin ? <>    {showAdmin && isAdmin && <section className="admin-page page-panel"><div className="page-panel-heading"><div><p className="eyebrow">SYSTEMINSTÄLLNINGAR</p><h1><Users size={24} /> Administration</h1><p className="muted">Hantera personal, behörigheter och konton.</p></div></div><h2><Users size={22} /> Personaladministration</h2><p className="muted">Bjud in medarbetare. De får en länk via e-post för att skapa sitt eget lösenord.</p><form className="machine-form" onSubmit={inviteUser}><label className="full">Medarbetarens namn<input value={newUserName} onChange={e => setNewUserName(e.target.value)} required placeholder="För- och efternamn" /></label><label className="full">E-postadress<input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required placeholder="namn@moremaskiner.se" /></label><label className="full">Behörighet<select value={newUserRole} onChange={e => setNewUserRole(e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select></label><button className="primary wide" disabled={adminBusy}><UserPlus size={16} /> {adminBusy ? 'Skickar inbjudan…' : 'Bjud in medarbetare'}</button>{error && <p className="error full">{error}</p>}</form><div className="detail-section"><h3><ShieldCheck size={18} /> Skapa lösenordslänk</h3><p className="muted">Skapa en länk åt en befintlig medarbetare utan att skicka e-post.</p><form className="machine-form" onSubmit={createRecoveryLink}><label className="full">Medarbetarens e-post<input type="email" value={recoveryEmail} onChange={e => { setRecoveryEmail(e.target.value); setRecoveryLink(''); }} required placeholder="namn@moremaskiner.se" /></label><button className="primary wide" disabled={adminBusy}>{adminBusy ? 'Skapar länk…' : 'Skapa lösenordslänk'}</button>{recoveryLink && <label className="full">Länk – kopiera och skicka säkert<textarea value={recoveryLink} readOnly onFocus={e => e.target.select()} rows={4} /></label>}{error && <p className="error full">{error}</p>}</form></div><div className="detail-section"><div className="admin-users-heading"><h3><ShieldCheck size={18} /> Personal i systemet</h3><button type="button" className="admin-refresh-button" onClick={loadAdminUsers} disabled={adminUsersLoading || adminBusy}><RefreshCw size={14} /> {adminUsersLoading ? 'Hämtar…' : 'Uppdatera lista'}</button></div><p className="muted">Ändringar påverkar användarens inloggning och behörighet. Historik och tidigare bokningar behålls.</p><div className="admin-users-heading"><span className="muted">{adminUsers.filter(user => user.is_active !== false).length} aktiva medarbetare</span>{adminUsers.some(user => user.is_active === false) && <button type="button" className="admin-refresh-button" onClick={() => setShowInactiveUsers(value => !value)}>{showInactiveUsers ? 'Dölj avaktiverade' : `Visa avaktiverade (${adminUsers.filter(user => user.is_active === false).length})`}</button>}</div>{adminUsersLoading && adminUsers.length === 0 ? <p className="muted">Hämtar personal…</p> : adminUsers.length === 0 ? <p className="muted">Inga användare kunde hämtas. Prova att uppdatera listan.</p> : adminUsers.filter(user => showInactiveUsers || user.is_active !== false).map(user => <div className="history-item admin-user-row" key={user.id}><div className="admin-user-main"><strong>{user.full_name || 'Namn saknas'}</strong><small>{user.email || 'E-post saknas'} · {user.auth_user_found === false ? 'Auth-konto saknas' : user.is_active ? 'Aktiv' : 'Avaktiverad'}</small></div><div className="admin-user-controls"><select aria-label={`Behörighet för ${user.full_name || user.email}`} value={user.role || 'seller'} disabled={adminBusy || user.id === session?.user?.id} onChange={e => updateAdminUser('change_role', user, e.target.value)}><option value="seller">Säljare</option><option value="admin">Administratör</option></select>{user.id !== session?.user?.id && <button type="button" className="admin-status-button" disabled={adminBusy} onClick={() => updateAdminUser(user.is_active ? 'deactivate' : 'reactivate', user)}>{user.is_active ? 'Avaktivera' : 'Återaktivera'}</button>}</div></div>)}<div className="detail-section auth-activity-section"><button type="button" className="admin-refresh-button" onClick={() => { const next = !showAuthActivity; setShowAuthActivity(next); if (next) loadAuthActivity(); }}><History size={15} /> {showAuthActivity ? 'Dölj inloggningshistorik' : 'Visa inloggningshistorik'}</button>{showAuthActivity && <div className="auth-activity-list">{authActivityLoading ? <p className="muted">Hämtar historik…</p> : authActivity.length === 0 ? <p className="muted">Ingen inloggningshistorik ännu.</p> : authActivity.map(item => <div className="auth-activity-row" key={item.id}><span className={item.event_type === 'login' ? 'auth-activity-icon login' : 'auth-activity-icon logout'}>{item.event_type === 'login' ? <LogIn size={16} /> : <LogOut size={16} />}</span><div><strong>{item.profiles?.full_name || 'Okänd användare'}</strong><small>{item.event_type === 'login' ? 'Loggade in' : 'Loggade ut'} · {dateTime(item.created_at)}</small></div></div>)}</div>}</div></div></section>}</> : <>
+    <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, inkommande maskiner och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till maskin</button></section>
+    <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
+    <section className="stats">
       {[
-        { value: 'in_stock', label: 'I lager', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.stock_quantity ?? 1) - Number(m.reserved_quantity || 0)), 0), Icon: Tag },
+        { value: 'in_stock', label: 'Lager', count: machines.reduce((sum, m) => sum + availableStock(m), 0), Icon: Tag },
         { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
-        { value: 'reserved', label: 'Reserverade', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.reserved_quantity || 0)), 0), Icon: Clock3 },
-        { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.sold_quantity || 0)), 0), Icon: CheckCircle2 }
+        { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + displayedSoldQuantity(m), 0), Icon: CheckCircle2 }
       ].map(({ value, label, count, Icon }) => (
         <div
           key={value}
@@ -2035,10 +1788,9 @@ export default function App() {
         </div>
       ))}
     </section>
-    {isSearchingMachines && <p className="machine-search-count">{filtered.length} {filtered.length === 1 ? 'maskin hittades' : 'maskiner hittades'}</p>}
 
     {error && <div className="error-banner">{error}</div>}
-    {filter === 'overview' && !search.trim() ? null : loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <>{isSearchingMachines ? <section className="machine-compact-list">{visibleMachines.map(machine => <button type="button" className="machine-compact-row" key={machine.id} onClick={() => loadMachineDetails(machine)}><span className="machine-compact-heading"><strong>{machine.article_code || machine.machine_number || 'Utan artikelkod'} – {[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</strong>{machine.description && <span className="machine-compact-description">{machine.description}</span>}</span><span className="machine-compact-meta"><span>{Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.reserved_quantity || 0))} lediga</span><span>{Number(machine.reserved_quantity || 0)} reserverade</span>{Number(machine.incoming_quantity || 0) > 0 && <span>{Number(machine.incoming_quantity)} på väg hem</span>}</span><span className="machine-compact-arrow">›</span></button>)}</section> : <section className="machine-grid">{visibleMachines.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'in_stock' ? 'in_stock' : filter === 'incoming' ? 'incoming' : filter === 'reserved' ? 'reserved' : filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'reserved' ? `${Number(machine.reserved_quantity || 0)} reserverad${Number(machine.reserved_quantity || 0) === 1 ? '' : 'e'}` : filter === 'in_stock' ? `${Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.reserved_quantity || 0))} i lager` : filter === 'incoming' ? `${Math.max(0, Number(machine.incoming_quantity || 0))} på väg hem` : filter === 'sold' && Number(machine.sold_quantity || 0) > 0 ? `${Number(machine.sold_quantity || 0)} sålda` : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.article_code ? `Artikelkod ${machine.article_code}` : (machine.machine_number || 'Inget artikelnummer')}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.reserved_quantity || 0))}</strong><small>Lediga i lager</small></span><span><strong>{Number(machine.reserved_quantity || 0)}</strong><small>Reserverade</small></span><span><strong>{Number(machine.sold_quantity || 0)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong></div></button>)}</section>}{filtered.length > visibleMachines.length && <button type="button" className="secondary-action machine-show-more" onClick={() => setVisibleMachineCount(count => count + 20)}>Visa fler maskiner ({filtered.length - visibleMachines.length} kvar)</button>}</>}
+    {filter === 'overview' && !search.trim() ? null : loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>Inga maskiner att visa</h3><p>Prova att ändra sökning eller filter, eller lägg till en maskin.</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (filter === 'in_stock' ? 'in_stock' : filter === 'incoming' ? 'incoming' : filter === 'reserved' ? 'reserved' : filter === 'sold' && displayedSoldQuantity(machine) > 0 ? 'sold' : displayMachineStatus(machine))}>{filter === 'reserved' ? '' : filter === 'in_stock' ? `${availableStock(machine)} i lager` : filter === 'incoming' ? `${Math.max(0, Number(machine.incoming_quantity || 0))} på väg hem` : filter === 'sold' && displayedSoldQuantity(machine) > 0 ? `${displayedSoldQuantity(machine)} sålda` : (statusLabel[displayMachineStatus(machine)] || displayMachineStatus(machine))}</span></div><div className="machine-info"><p className="machine-no">{machine.article_code ? `Artikelkod ${machine.article_code}` : (machine.machine_number || 'Inget artikelnummer')}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Maskin'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{availableStock(machine)}</strong><small>Lager</small></span><span><strong>{displayedSoldQuantity(machine)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong></div></button>)}</section>}
 
     {selected && <div className="overlay" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setSelected(null); setSelectedReservationId(null); setSelectedDetailMode('stock'); }}><X /></button><p className="eyebrow">MASKINDETALJER</p><h2>{selected.brand} {selected.model}</h2><p className="muted">{selected.machine_number}</p><p>{selected.description || 'Ingen beskrivning registrerad.'}</p><div className="details"><span>Årsmodell: {selected.year || '–'}</span><span>Timmar: {selected.hours ?? '–'}</span></div><strong className="price">{selected.price != null ? `${Number(selected.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong><p className="muted">Status: {statusLabel[displayMachineStatus(selected)] || displayMachineStatus(selected)}</p>
       <div className="dialog-actions"><button type="button" className="secondary-action" onClick={openEditMachine}>Redigera maskinuppgifter</button></div>
@@ -2059,49 +1811,32 @@ export default function App() {
       </div>
       {isReservationContext && detailReservations.length > 0 && <div className="detail-reservation-sellers">{detailReservations.map(r => <div className="detail-reservation-seller" key={`seller-${r.id}`}><span className="reservation-seller-label">ANSVARIG SÄLJARE{detailReservations.length > 1 ? ` · ${r.customer_name || 'Kund'}` : ''}</span><strong>{profiles.find(p => p.id === r.reserved_by)?.full_name || 'Namn saknas'}</strong></div>)}</div>}
       {!isSoldContext && <>
-      <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{isReservationContext && <p className="muted">Du hanterar kundreservationer. Här kan du sälja från eller avboka reservationerna.</p>}<p>Fysiskt i lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverat enligt artikelregistret: <strong>{Number(selected.external_reserved_quantity || 0)} st</strong></p><p>Kundreservationer i appen: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Reserverat totalt: <strong>{(Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - (Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)))} st</strong></p>
-      {isReservationContext && detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><div className="customer-detail-grid">{r.customer_company && <div className="customer-detail-field"><span>Företag</span><strong>{r.customer_company}</strong></div>}{r.customer_phone && <div className="customer-detail-field"><span>Telefon</span><a href={`tel:${r.customer_phone}`}>{r.customer_phone}</a></div>}{r.customer_email && <div className="customer-detail-field"><span>E-post</span><a href={`mailto:${r.customer_email}`}>{r.customer_email}</a></div>}{r.customer_note && <div className="customer-detail-field full"><span>Anteckning</span><strong>{r.customer_note}</strong></div>}</div><small>{remaining} st kvar att leverera · Bokad {date(r.reservation_date)}</small>{r.reservation_end_date && <div className="reservation-deadline detail-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></div>}<button onClick={() => openEditReservation(r)} disabled={saving}>Redigera reservation</button><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)} disabled={saving}><Ban size={16} /> Avboka återstående antal</button></div>; })}</>}
-      {isReservationContext && detailReservations.length === 0 && Number(selected.external_reserved_quantity || 0) > 0 && <div className="history-item reservation-row"><strong>Extern reservation från artikelregistret</strong><small>{Number(selected.external_reserved_quantity || 0)} st reserverade enligt artikelregistret från Jörgens lagerunderlag.</small><label className="full">Antal att sälja från extern reservation<input type="number" min="1" max={Number(selected.external_reserved_quantity || 0)} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={markSoldExternalReservation} disabled={saving}>Sälj från extern reservation</button><p className="muted">Vid försäljning minskas både fysiskt lager och externt reserverat antal. Återförs försäljningen återställs båda.</p></div>}
-      {isReservationContext && detailReservations.length === 0 && Number(selected.external_reserved_quantity || 0) <= 0 && <p className="muted">Det finns ingen aktiv kundreservation eller extern reservation på den här maskinen.</p>}
+      <div className="reservation-info inventory-summary"><h3>Lager och försäljning</h3><p>Fysiskt i lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Tillgängliga i lager: <strong>{availableStock(selected)} st</strong></p><p>Sålda/orderlagda: <strong>{displayedSoldQuantity(selected)} st</strong></p>
+      {isReservationContext && detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)}</small>{r.reservation_end_date && <div className="reservation-deadline detail-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></div>}<button onClick={() => openEditReservation(r)} disabled={saving}>Redigera reservation</button><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)} disabled={saving}><Ban size={16} /> Avboka återstående antal</button></div>; })}</>}
+      {isReservationContext && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
       </div>
       </>}
       {!isReservationContext && !isSoldContext && filter !== 'incoming' && <div className="stock-actions">
         <h4>Försäljning från lager</h4>
-        <p className="muted">Tillgängligt att sälja eller reservera: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - (Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)))} st</strong></p>
-        {Math.max(0, Number(selected.stock_quantity ?? 1) - (Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))) > 0 && <>
-          <label className="full">Antal att sälja från lagret<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - (Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)))} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label>
-          <button className="primary" onClick={() => markSold(null)} disabled={saving}>Registrera försäljning</button>
-          <button onClick={() => { setReservationQuantity('1'); setReservationEndDate(''); setReservedBy(session?.user?.id || ''); setShowReservation(true); }} disabled={saving}><CalendarDays size={16} /> Reservera från lagret</button>
+        <p className="muted">Tillgängligt att sälja: <strong>{availableStock(selected)} st</strong></p>
+        {availableStock(selected) > 0 && <>
+          <label className="full">Antal att sälja från lagret<input type="number" min="1" max={availableStock(selected)} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label>
+          <button className="primary" onClick={() => markSold(null)} disabled={saving}>Sälj från lagret</button>
         </>}
       </div>}
       {!isSoldContext && (
-      <div className="detail-section inventory-controls"><h3>{filter === 'incoming' ? 'Inkommande leveranser' : 'Lager och leveranser'}</h3>{filter !== 'incoming' && <div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div>}{incomingDeliveries.length > 0 && <div className="quantity-control incoming-deliveries-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}><div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span className="incoming-eta-value">{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span><button type="button" className="text-button edit-eta-button" onClick={() => setEditingDeliveryEtaId(current => current === delivery.id ? null : delivery.id)}>{editingDeliveryEtaId === delivery.id ? 'Avbryt' : 'Ändra ETA'}</button><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div>{editingDeliveryEtaId === delivery.id && <div className="delivery-eta-edit"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ändring</button></div>}<div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button className="primary" onClick={() => receiveIncomingDelivery(delivery)}>Registrera mottaget</button></div></div>)}</div>}{Number(selected.sold_quantity || 0) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {Number(selected.sold_quantity)} st</p>}
+      <div className="detail-section inventory-controls"><h3>{filter === 'incoming' ? 'Inkommande leveranser' : 'Lager och leveranser'}</h3>{filter !== 'incoming' && <div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div>}{incomingDeliveries.length > 0 && <div className="quantity-control incoming-deliveries-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}><div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span className="incoming-eta-value">{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span><button type="button" className="text-button edit-eta-button" onClick={() => setEditingDeliveryEtaId(current => current === delivery.id ? null : delivery.id)}>{editingDeliveryEtaId === delivery.id ? 'Avbryt' : 'Ändra ETA'}</button><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div>{editingDeliveryEtaId === delivery.id && <div className="delivery-eta-edit"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ändring</button></div>}<div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button className="primary" onClick={() => receiveIncomingDelivery(delivery)}>Registrera mottaget</button></div></div>)}</div>}{displayedSoldQuantity(selected) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {displayedSoldQuantity(selected)} st</p>}
 
       </div>
       )}
-      {(isSoldContext || saleHistory.length > 0) && <section className="stock-actions sold-actions"><h4>Försäljningshistorik</h4><p className="muted">Sålda totalt i lagersaldot: <strong>{Number(selected.sold_quantity || 0)} st</strong></p>{saleHistory.length === 0 ? <><p className="muted">Inga registrerade kundförsäljningar ännu.</p>{Number(selected.sold_quantity || 0) > 0 && <><p className="muted">Det finns äldre försäljningar från innan kundhistoriken infördes.</p><button type="button" onClick={restoreSoldMachine} disabled={saving}>Återför 1 äldre såld enhet</button></>}</> : saleHistory.map(sale => <div className="history-item reservation-row sale-history-item" key={sale.id}><div className="sale-history-heading"><strong>{sale.customer_name} · {sale.quantity} st</strong><span className={`sale-status ${sale.status === 'reversed' ? 'reversed' : ''}`}>{sale.status === 'reversed' ? 'ÅTERFÖRD' : 'GENOMFÖRD'}</span></div><div className="customer-detail-grid">{sale.customer_company && <div className="customer-detail-field"><span>Företag</span><strong>{sale.customer_company}</strong></div>}{sale.customer_phone && <div className="customer-detail-field"><span>Telefon</span><a href={`tel:${sale.customer_phone}`}>{sale.customer_phone}</a></div>}{sale.customer_email && <div className="customer-detail-field"><span>E-post</span><a href={`mailto:${sale.customer_email}`}>{sale.customer_email}</a></div>}{sale.note && <div className="customer-detail-field full"><span>Anteckning</span><strong>{sale.note}</strong></div>}</div><small>Försäljningsdatum: {date(sale.sale_date)}</small><small>Registrerad av: {profiles.find(p => p.id === sale.sold_by)?.full_name || 'Användare'}</small><small>{sale.reservation_source === 'external_reservation' ? 'Från extern reservation' : sale.reservation_source === 'app_reservation' ? 'Från kundreservation i appen' : 'Från tillgängligt lager'}</small>{sale.status === 'completed' && <button type="button" onClick={() => reverseMachineSale(sale)} disabled={saving}>Återför denna försäljning</button>}</div>)}</section>}
+      {isSoldContext && displayedSoldQuantity(selected) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{displayedSoldQuantity(selected)} st</strong></p>{Number(selected.sold_quantity || 0) > 0 && <button onClick={restoreSoldMachine} disabled={saving}>Ångra fakturerad försäljning – återför 1 till lagret</button>}</section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
-      <div className="detail-section"><button type="button" className="admin-refresh-button" onClick={() => setShowMachineHistory(value => !value)}><History size={18} /> {showMachineHistory ? 'Dölj historik' : 'Visa historik'}</button>{showMachineHistory && <div className="machine-history-list"><h3>Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong>{(h.new_data?.customer_name || h.old_data?.customer_name) && <small>{h.new_data?.customer_name || h.old_data?.customer_name}{(h.new_data?.quantity || h.old_data?.quantity) ? ` · ${h.new_data?.quantity || h.old_data?.quantity} st` : ''}{(h.new_data?.customer_phone || h.old_data?.customer_phone) ? ` · ${h.new_data?.customer_phone || h.old_data?.customer_phone}` : ''}</small>}<small>{dateTime(h.created_at)} · {profiles.find(p => p.id === h.user_id)?.full_name || 'Användare'}</small></div>)}</div>}</div>
+      <div className="detail-section"><button type="button" className="admin-refresh-button" onClick={() => setShowMachineHistory(value => !value)}><History size={18} /> {showMachineHistory ? 'Dölj historik' : 'Visa historik'}</button>{showMachineHistory && <div className="machine-history-list"><h3>Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
-    {showSaleForm && selected && <div className="overlay" onClick={() => !saving && setShowSaleForm(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setShowSaleForm(false)} disabled={saving}><X /></button><p className="eyebrow">NY FÖRSÄLJNING</p><h2>{saleReservation ? 'Slutför reservation' : saleFromExternalReservation ? 'Sälj extern reservation' : 'Registrera försäljning'}</h2><p className="muted">{selected.brand} {selected.model} · {saleReservation ? `Reservation för ${saleReservation.customer_name}` : saleFromExternalReservation ? 'Försäljning från extern reservation i artikelregistret' : 'Försäljning från tillgängligt lager'}</p><form className="machine-form" onSubmit={submitMachineSale}>
-      <label className="full">Kundens namn<input value={saleForm.customer_name} onChange={e => setSaleForm(v => ({...v,customer_name:e.target.value}))} required /></label>
-      <label className="full">Företag (valfritt)<input value={saleForm.customer_company} onChange={e => setSaleForm(v => ({...v,customer_company:e.target.value}))} /></label>
-      <label className="full">Telefonnummer<input type="tel" value={saleForm.customer_phone} onChange={e => setSaleForm(v => ({...v,customer_phone:e.target.value}))} required /></label>
-      <label className="full">E-post (valfritt)<input type="email" value={saleForm.customer_email} onChange={e => setSaleForm(v => ({...v,customer_email:e.target.value}))} /></label>
-      <label className="full">Försäljningsdatum<input type="date" value={saleForm.sale_date} onChange={e => setSaleForm(v => ({...v,sale_date:e.target.value}))} required /></label>
-      <label className="full">Antal<input type="number" min="1" max={saleReservation ? Math.max(1,Number(saleReservation.quantity||1)-Number(saleReservation.fulfilled_quantity||0)) : saleFromExternalReservation ? Math.max(1,Number(selected.external_reserved_quantity||0)) : Math.max(1,Number(selected.stock_quantity||0)-Number(selected.external_reserved_quantity||0)-activeReservations.reduce((n,r)=>n+Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)),0))} value={saleForm.quantity} onChange={e => setSaleForm(v => ({...v,quantity:e.target.value}))} required /></label>
-      <label className="full">Anteckning (valfritt)<textarea rows={2} value={saleForm.note} onChange={e => setSaleForm(v => ({...v,note:e.target.value}))} /></label>
-      <p className="muted">{saleReservation ? 'Kunduppgifterna är hämtade från reservationen och kan justeras innan försäljningen registreras.' : saleFromExternalReservation ? 'Försäljningen minskar både fysiskt lager och externt reserverat antal. Inkommande leveranser påverkar inte lagersaldot.' : 'Försäljningen dras från tillgängligt fysiskt lager. Inkommande leveranser påverkar inte lagersaldot.'}</p>
-      <button className="primary wide" disabled={saving}>{saving ? 'Registrerar…' : 'Bekräfta försäljning'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
-
     {editingReservation && selected && <div className="overlay" onClick={() => !saving && setEditingReservation(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setEditingReservation(null)} disabled={saving}><X /></button><p className="eyebrow">REDIGERA RESERVATION</p><h2>Ändra kundreservation</h2><p className="muted">{selected.brand} {selected.model} · {selected.machine_number || 'Utan maskinnummer'}</p><form className="machine-form" onSubmit={saveReservationEdit}>
       <label className="full">Kundens namn<input value={reservationEditForm.customer_name} onChange={e => setReservationEditForm({ ...reservationEditForm, customer_name: e.target.value })} required /></label>
-      <label className="full">Företag (valfritt)<input value={reservationEditForm.customer_company} onChange={e => setReservationEditForm({ ...reservationEditForm, customer_company: e.target.value })} /></label>
-      <label className="full">Telefonnummer<input type="tel" value={reservationEditForm.customer_phone} onChange={e => setReservationEditForm({ ...reservationEditForm, customer_phone: e.target.value })} required /></label>
-      <label className="full">E-post (valfritt)<input type="email" value={reservationEditForm.customer_email} onChange={e => setReservationEditForm({ ...reservationEditForm, customer_email: e.target.value })} /></label>
-      <label className="full">Anteckning (valfritt)<textarea rows={2} value={reservationEditForm.customer_note} onChange={e => setReservationEditForm({ ...reservationEditForm, customer_note: e.target.value })} /></label>
       <label className="full">Totalt reserverat antal<input type="number" min={Math.max(1, Number(editingReservation.fulfilled_quantity || 0))} step="1" value={reservationEditForm.quantity} onChange={e => setReservationEditForm({ ...reservationEditForm, quantity: e.target.value })} required /></label>
       {Number(editingReservation.fulfilled_quantity || 0) > 0 && <p className="muted">Redan levererade: {Number(editingReservation.fulfilled_quantity)} st. Det antalet kan inte ändras här.</p>}
       <label className="full">Ansvarig säljare<select value={reservationEditForm.reserved_by} onChange={e => setReservationEditForm({ ...reservationEditForm, reserved_by: e.target.value })} required><option value="">Välj säljare</option>{profiles.filter(p => ['admin', 'seller'].includes(p.role)).map(p => <option key={p.id} value={p.id}>{p.full_name || 'Användare'}</option>)}</select></label>
@@ -2111,7 +1846,7 @@ export default function App() {
       <button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
 
-    {showReservation && selected && <div className="overlay" onClick={() => { setShowReservation(false); setReservationEndDate(''); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={Math.max(0, Number(selected.stock_quantity ?? 1) - (Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)))} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Företag (valfritt)<input value={customerCompany} onChange={e => setCustomerCompany(e.target.value)} /></label><label className="full">Telefonnummer<input type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} required placeholder="Kundens telefonnummer" /></label><label className="full">E-post (valfritt)<input type="email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} /></label><label className="full">Anteckning (valfritt)<textarea rows={2} value={customerNote} onChange={e => setCustomerNote(e.target.value)} /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required>{profiles.filter(p => p.is_active !== false && ['admin', 'seller'].includes(p.role)).map(p => <option key={p.id} value={p.id}>{p.full_name || 'Användare'}</option>)}</select><small className="muted">Förvalt är du som är inloggad. Du kan välja en annan aktiv säljare vid behov.</small></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><label className="full">Reserverad till och med (valfritt)<input type="date" min={new Date().toLocaleDateString('sv-SE')} value={reservationEndDate} onChange={e => setReservationEndDate(e.target.value)} /><small className="muted">Ansvarig säljare får en pushpåminnelse två dagar före slutdatumet.</small></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
+    {showReservation && selected && <div className="overlay" onClick={() => { setShowReservation(false); setReservationEndDate(''); }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setShowReservation(false)}><X /></button><p className="eyebrow">NY RESERVATION</p><h2>Reservera maskin</h2><p className="muted">{selected.brand} {selected.model} – {selected.machine_number}</p><form className="machine-form" onSubmit={createReservation}><label className="full">Antal att reservera<input type="number" min="1" max={availableStock(selected)} value={reservationQuantity} onChange={e => setReservationQuantity(e.target.value)} required /></label><label className="full">Kundens namn<input value={customerName} onChange={e => setCustomerName(e.target.value)} required placeholder="Ange kundens namn" /></label><label className="full">Ansvarig säljare<select value={reservedBy} onChange={e => setReservedBy(e.target.value)} required><option value="">Välj säljare</option>{profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || 'Inloggad användare'}</option>)}</select></label><label className="full">Reservationsdatum<input type="date" value={reservationDate} onChange={e => setReservationDate(e.target.value)} /></label><label className="full">Reserverad till och med (valfritt)<input type="date" min={new Date().toLocaleDateString('sv-SE')} value={reservationEndDate} onChange={e => setReservationEndDate(e.target.value)} /><small className="muted">Ansvarig säljare får en pushpåminnelse två dagar före slutdatumet.</small></label><button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara reservation'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
 
 
