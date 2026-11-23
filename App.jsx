@@ -1395,12 +1395,22 @@ export default function App() {
       return;
     }
     const completed = Boolean(data?.order_completed);
+    const isCustomerOrder = Boolean(delivery.sale_id);
     await loadMachines();
     await loadMachineDetails(selected, selectedReservationId);
     setSaving(false);
-    alert(completed
-      ? `Mottagningen registrerad. Hela kundordern är nu komplett och bokförd som såld (${amount} st mottagna).`
-      : `Mottagningen registrerad: ${amount} st. Kundordern väntar fortfarande på resterande antal.`);
+    let message;
+    if (isCustomerOrder && completed) {
+      message = `Mottagningen registrerad. Hela kundordern är nu komplett och bokförd som såld (${amount} st mottagna).`;
+    } else if (isCustomerOrder) {
+      message = `Mottagningen registrerad: ${amount} st. Kundordern väntar fortfarande på resterande antal.`;
+    } else {
+      const remaining = Math.max(0, Number(delivery.quantity || 0) - amount);
+      message = remaining > 0
+        ? `Mottagningen registrerad: ${amount} st. Lagret har fyllts på. ${remaining} st återstår på väg hem.`
+        : `Mottagningen registrerad: ${amount} st. Lagret har fyllts på.`;
+    }
+    alert(message);
   }
 
   async function saveReorderNeedQuantity(group) {
