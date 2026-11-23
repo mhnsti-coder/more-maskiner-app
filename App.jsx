@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown } from 'lucide-react';
+import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle2, Tag, MessageSquare, History, CalendarDays, Send, Ban, Users, UserPlus, ShieldCheck, Trash2, Megaphone, AlertCircle, Bell, BellRing, Paperclip, FileText, Download, Mail, MessageCircle, ChevronDown, ClipboardList } from 'lucide-react';
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Såld', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem', mixed_reserved: 'I lager + såld' };
@@ -36,6 +36,7 @@ export default function App() {
   const [machines, setMachines] = useState([]);
   const [reorderNeeds, setReorderNeeds] = useState([]);
   const [reorderSales, setReorderSales] = useState([]);
+  const [pendingCustomerOrders, setPendingCustomerOrders] = useState([]);
   const [reorderQuantityEdits, setReorderQuantityEdits] = useState({});
   const [profiles, setProfiles] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
@@ -481,6 +482,8 @@ export default function App() {
       setError(error.message);
     } else {
       const rows = data || [];
+      const { data: pendingOrderRows, error: pendingOrderError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status, created_at').eq('status', 'pending').order('created_at', { ascending: false });
+      if (pendingOrderError) { setError('Väntande kundorder kunde inte hämtas: ' + pendingOrderError.message); setLoading(false); return; }
       const { data: activeNeedRows, error: reorderError } = await supabase.from('machine_reorder_needs').select('*').in('status', ['open', 'ordered']).order('created_at', { ascending: false });
       if (reorderError) { setError('Maskinerna kunde hämtas, men beställningsbehov kunde inte hämtas: ' + reorderError.message); setLoading(false); return; }
       const linkedSaleIds = (activeNeedRows || []).map(row => row.sale_id).filter(Boolean);
@@ -494,6 +497,11 @@ export default function App() {
       (activeNeedRows || []).forEach(row => { if (row.sale_id && pendingSaleIds.has(row.sale_id)) pendingReservedByMachine[row.machine_id] = (pendingReservedByMachine[row.machine_id] || 0) + Number(row.stock_used || 0); });
       const reorderRows = (activeNeedRows || []).filter(row => row.status === 'open' && Number(row.order_quantity || 0) > 0);
       setReorderNeeds(reorderRows);
+      setPendingCustomerOrders((pendingOrderRows || []).map(sale => {
+        const need = (activeNeedRows || []).find(row => row.sale_id === sale.id);
+        const machine = rows.find(row => row.id === sale.machine_id);
+        return { ...sale, machine, stock_used: Number(need?.stock_used || 0), incoming_covered: Number(need?.incoming_covered || 0), order_quantity: Number(need?.order_quantity || 0) };
+      }));
       if (linkedSaleIds.length) {
         const { data: linkedSales, error: linkedSalesError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status').in('id', linkedSaleIds).order('created_at', { ascending: false });
         if (linkedSalesError) setError('Beställningsbehov kunde hämtas, men kunduppgifterna kunde inte hämtas: ' + linkedSalesError.message);
@@ -910,8 +918,8 @@ export default function App() {
     const q = search.toLowerCase();
     const matches = [m.machine_number, m.article_code, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
     const hasOpenReorder = groupedReorderNeeds.some(n => n.machine_id === m.id);
-    return matches && (filter === 'all' || filter === 'overview' || (filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
-  }), [machines, groupedReorderNeeds, search, filter]);
+    return matches && (filter === 'all' || filter === 'overview' || (filter === 'pending' ? pendingCustomerOrders.some(o => o.machine_id === m.id) : filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
+  }), [machines, groupedReorderNeeds, pendingCustomerOrders, search, filter]);
 
   async function signIn(event) {
     event.preventDefault(); setError(''); setPasswordNotice('');
@@ -1959,6 +1967,7 @@ export default function App() {
         { value: 'all', label: 'Produkter', count: machines.length, Icon: Package },
         { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
         { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + displayedSoldQuantity(m), 0), Icon: CheckCircle2 },
+        { value: 'pending', label: 'Väntande kundorder', count: pendingCustomerOrders.reduce((sum, order) => sum + Number(order.quantity || 0), 0), Icon: ClipboardList },
         { value: 'reorder', label: 'Produkter att beställa', count: groupedReorderNeeds.reduce((sum, n) => sum + Number(n.order_quantity || 0), 0), Icon: AlertCircle }
       ].map(({ value, label, count, Icon }) => (
         <div
@@ -1980,6 +1989,8 @@ export default function App() {
         </div>
       ))}
     </section>
+
+    {filter === 'pending' && <section className="detail-section reorder-overview"><h2>Väntande kundorder</h2><p className="muted">Här visas kundorder som väntar på att hela antalet ska finnas fysiskt hemma. De räknas inte som sålda förrän ordern kan slutföras i sin helhet.</p>{pendingCustomerOrders.filter(order => !search.trim() || [order.customer_order_number, order.customer_name, order.machine?.article_code, order.machine?.brand, order.machine?.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase()))).length === 0 ? <p className="empty">Det finns inga väntande kundorder.</p> : <div className="reorder-needs-list">{pendingCustomerOrders.filter(order => !search.trim() || [order.customer_order_number, order.customer_name, order.machine?.article_code, order.machine?.brand, order.machine?.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase()))).map(order => <article className="reorder-need-card" key={order.id}><div><strong>{order.machine ? [order.machine.brand, order.machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{order.machine?.article_code ? `Artikelkod ${order.machine.article_code}` : 'Artikelkod saknas'}</p><div className="reorder-customer-card"><div className="reorder-customer-main"><strong>{order.customer_name || 'Kundnamn saknas'}</strong>{order.customer_phone && <a href={'tel:' + order.customer_phone}>{order.customer_phone}</a>}</div><div className="reorder-customer-order"><span>Kundens ordernummer</span><strong>{order.customer_order_number || 'Saknas'}</strong><small>{order.quantity} st · {date(order.sale_date)}</small></div>{order.customer_company && <small>{order.customer_company}</small>}{order.customer_email && <a href={'mailto:' + order.customer_email}>{order.customer_email}</a>}</div><p className="muted">Reserverat från lager: {order.stock_used} st · Inkommande tilldelat: {order.incoming_covered} st · Ytterligare att beställa: {order.order_quantity} st</p><span className="pending-order-status">Väntar på komplett leverans</span></div></article>)}</div>}</section>}
 
     {filter === 'reorder' && <section className="detail-section reorder-overview"><h2>Produkter att beställa</h2><p className="muted">Beställningsbehov för samma produkt samlas här. Varje kundförsäljning visas separat så att kunduppgifterna följer med.</p>{groupedReorderNeeds.length === 0 ? <p className="empty">Det finns inga öppna beställningsbehov.</p> : <div className="reorder-needs-list">{groupedReorderNeeds.filter(group => !search.trim() || machines.some(m => m.id === group.machine_id && [m.machine_number,m.article_code,m.brand,m.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())))).map(group => { const machine = machines.find(m => m.id === group.machine_id); return <article className="reorder-need-card" key={group.machine_id}><div><strong>{machine ? [machine.brand,machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{machine?.article_code ? `Artikelkod ${machine.article_code}` : machine?.machine_number || 'Artikelnummer saknas'}</p><small>Sålda: {group.sold_quantity} st · Från lager: {group.stock_used} st · Saknas: {Math.max(0, Number(group.sold_quantity || 0) - Number(group.stock_used || 0) - Number(group.incoming_covered || 0))} st · På väg hem: {group.incoming_covered} st</small>{group.sales.length > 0 && <div className="reorder-customer-list"><strong>Kundförsäljningar</strong>{group.sales.map(sale => <div className="reorder-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><div className="reorder-customer-main"><strong>{sale.customer_name || 'Kundnamn saknas'}{sale.status === 'reversed' ? ' · Återförd' : ''}</strong>{sale.customer_phone && <a href={'tel:' + sale.customer_phone}>{sale.customer_phone}</a>}</div><div className="reorder-customer-order"><span>Kundens ordernummer</span><strong>{sale.customer_order_number || 'Saknas – äldre försäljning'}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small></div>{sale.customer_company && <small>{sale.customer_company}</small>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}</div>)}</div>}</div><div className="reorder-need-action"><div className="reorder-order-block"><strong className="reorder-order-heading">Att beställa:</strong><label className="reorder-quantity-label"><input aria-label="Att beställa antal" type="number" min="1" step="1" value={reorderQuantityEdits[group.machine_id] ?? group.order_quantity} onChange={e => setReorderQuantityEdits(current => ({ ...current, [group.machine_id]: e.target.value }))} /></label></div><button className="secondary" onClick={() => saveReorderNeedQuantity(group)} disabled={saving || Number(reorderQuantityEdits[group.machine_id] ?? group.order_quantity) === Number(group.order_quantity)}>Spara antal</button><button className="primary" onClick={() => markReorderNeedOrdered(group)} disabled={saving}>Beställ · flytta till På väg hem</button></div></article>; })}</div>}</section>}
 
