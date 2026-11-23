@@ -86,6 +86,7 @@ export default function App() {
   const [incomingDeliverySales, setIncomingDeliverySales] = useState([]);
   const [editingDeliveryEtaId, setEditingDeliveryEtaId] = useState(null);
   const [newDelivery, setNewDelivery] = useState(emptyDelivery());
+  const [showStockOrder, setShowStockOrder] = useState(false);
   const [addDeliveries, setAddDeliveries] = useState([]);
   const [receiveDeliveryAmounts, setReceiveDeliveryAmounts] = useState({});
   const [receiveQuantity, setReceiveQuantity] = useState('1');
@@ -1365,6 +1366,46 @@ export default function App() {
     setNewDelivery(emptyDelivery()); setError(''); await refreshIncomingDeliveries();
   }
 
+  async function createStockReplenishmentOrder(e) {
+    e?.preventDefault();
+    if (!selected || !session?.user?.id) return;
+    const quantity = Number.parseInt(newDelivery.quantity, 10);
+    const year = Number.parseInt(newDelivery.eta_year, 10);
+    const week = Number.parseInt(newDelivery.eta_week, 10);
+    if (!Number.isInteger(quantity) || quantity < 1 || !Number.isInteger(year) || year < 2020 || year > 2100 || !Number.isInteger(week) || week < 1 || week > 53) {
+      setError('Ange ett giltigt antal samt ETA-år och ETA-vecka (1–53).');
+      return;
+    }
+    setSaving(true); setError('');
+    const { error: insertError } = await supabase.from('machine_incoming_deliveries').insert({
+      machine_id: selected.id,
+      quantity,
+      eta_year: year,
+      eta_week: week,
+      sale_id: null,
+      is_stock_replenishment: true,
+      created_by: session.user.id
+    });
+    if (insertError) {
+      setError('Beställningen kunde inte registreras: ' + insertError.message);
+      setSaving(false);
+      return;
+    }
+    const { data: rows, error: sumError } = await supabase.from('machine_incoming_deliveries').select('quantity').eq('machine_id', selected.id);
+    if (sumError) {
+      setError('Beställningen registrerades, men lagrets inkommande antal kunde inte uppdateras: ' + sumError.message);
+    } else {
+      const total = (rows || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+      await supabase.from('machines').update({ incoming_quantity: total }).eq('id', selected.id);
+      setSelected(current => current?.id === selected.id ? { ...current, incoming_quantity: total } : current);
+      setShowStockOrder(false);
+      setNewDelivery(emptyDelivery());
+      await Promise.all([loadMachines(), refreshIncomingDeliveries()]);
+      alert(`${quantity} st har lagts som lagerpåfyllning och visas nu under På väg hem.`);
+    }
+    setSaving(false);
+  }
+
   async function saveIncomingDeliveryEta(delivery) {
     const year = Number.parseInt(delivery.eta_year, 10), week = Number.parseInt(delivery.eta_week, 10);
     if (!Number.isInteger(year) || year < 2020 || year > 2100 || !Number.isInteger(week) || week < 1 || week > 53) { setError('Ange ett giltigt ETA-år och en ETA-vecka (1–53).'); return; }
@@ -2058,7 +2099,7 @@ export default function App() {
         </>
       </div>}
       {!isSoldContext && (
-      <div className="detail-section inventory-controls"><h3>{filter === 'incoming' ? 'Inkommande leveranser' : 'Lager och leveranser'}</h3>{filter !== 'incoming' && <div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div>}{incomingDeliveries.length > 0 && <div className="quantity-control incoming-deliveries-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}>{delivery.sale_id && (() => { const customer = incomingDeliverySales.find(item => item.id === delivery.sale_id); return customer ? <div className="incoming-customer-card"><strong>{customer.customer_name || 'Kundnamn saknas'}</strong><span>Kundens ordernummer: <strong>{customer.customer_order_number || 'Saknas – äldre försäljning'}</strong></span>{customer.customer_phone && <a href={'tel:' + customer.customer_phone}>{customer.customer_phone}</a>}{customer.customer_company && <small>{customer.customer_company}</small>}{customer.customer_email && <a href={'mailto:' + customer.customer_email}>{customer.customer_email}</a>}</div> : <p className="muted incoming-customer-missing">Kunduppgifter saknas för denna leverans</p>; })()}<div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span className="incoming-eta-value">{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span>{delivery.is_stock_replenishment && <span className="incoming-stock-tag">Lagerpåfyllning</span>}<button type="button" className="text-button edit-eta-button" onClick={() => setEditingDeliveryEtaId(current => current === delivery.id ? null : delivery.id)}>{editingDeliveryEtaId === delivery.id ? 'Avbryt' : 'Ändra ETA'}</button><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div>{editingDeliveryEtaId === delivery.id && <div className="delivery-eta-edit"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ändring</button></div>}<div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button type="button" className="primary" onClick={() => receiveIncomingDelivery(delivery)} disabled={saving}>{saving ? 'Registrerar…' : 'Registrera mottaget'}</button></div></div>)}</div>}{displayedSoldQuantity(selected) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {displayedSoldQuantity(selected)} st</p>}
+      <div className="detail-section inventory-controls"><h3>{filter === 'incoming' ? 'Inkommande leveranser' : 'Lager och leveranser'}</h3>{filter !== 'incoming' && <div className="dialog-actions"><button type="button" className="primary" onClick={() => { setNewDelivery(emptyDelivery()); setError(''); setShowStockOrder(true); }}>Beställning</button></div>}{filter !== 'incoming' && <div className="quantity-control"><div className="quantity-heading"><strong>Antal i lager</strong><span>Fysiskt på plats</span></div><input aria-label="Antal i lager" type="number" min="0" step="1" value={stockEdit} onChange={e => setStockEdit(e.target.value)} /><button className="primary" onClick={saveStockQuantity} disabled={Number(stockEdit) === Number(selected.stock_quantity ?? 1)}>Spara lagersaldo</button></div>}{incomingDeliveries.length > 0 && <div className="quantity-control incoming-deliveries-control"><div className="quantity-heading"><strong>Inkommande leveranser</strong><span>{incomingDeliveries.reduce((sum, d) => sum + Number(d.quantity || 0), 0)} st totalt på väg hem</span></div>{incomingDeliveries.map(delivery => <div className="incoming-delivery-card" key={delivery.id}>{delivery.sale_id && (() => { const customer = incomingDeliverySales.find(item => item.id === delivery.sale_id); return customer ? <div className="incoming-customer-card"><strong>{customer.customer_name || 'Kundnamn saknas'}</strong><span>Kundens ordernummer: <strong>{customer.customer_order_number || 'Saknas – äldre försäljning'}</strong></span>{customer.customer_phone && <a href={'tel:' + customer.customer_phone}>{customer.customer_phone}</a>}{customer.customer_company && <small>{customer.customer_company}</small>}{customer.customer_email && <a href={'mailto:' + customer.customer_email}>{customer.customer_email}</a>}</div> : <p className="muted incoming-customer-missing">Kunduppgifter saknas för denna leverans</p>; })()}<div className="incoming-delivery-title"><strong>{delivery.quantity} st</strong><span className="incoming-eta-value">{delivery.eta_year && delivery.eta_week ? `ETA ${delivery.eta_year} v${String(delivery.eta_week).padStart(2, '0')}` : 'ETA ej angiven'}</span>{delivery.is_stock_replenishment && <span className="incoming-stock-tag">Lagerpåfyllning</span>}<button type="button" className="text-button edit-eta-button" onClick={() => setEditingDeliveryEtaId(current => current === delivery.id ? null : delivery.id)}>{editingDeliveryEtaId === delivery.id ? 'Avbryt' : 'Ändra ETA'}</button><button type="button" className="icon-button" aria-label="Ta bort leverans" onClick={() => removeIncomingDelivery(delivery)}><Trash2 size={16}/></button></div>{editingDeliveryEtaId === delivery.id && <div className="delivery-eta-edit"><label>ETA år<input type="number" min="2020" max="2100" value={delivery.eta_year ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_year: e.target.value } : item))}/></label><label>ETA vecka<input type="number" min="1" max="53" value={delivery.eta_week ?? ''} onChange={e => setIncomingDeliveries(rows => rows.map(item => item.id === delivery.id ? { ...item, eta_week: e.target.value } : item))}/></label><button type="button" onClick={() => saveIncomingDeliveryEta(delivery)}>Spara ändring</button></div>}<div className="receive-delivery-row"><label>Ta emot antal<input type="number" min="1" max={delivery.quantity} step="1" value={receiveDeliveryAmounts[delivery.id] ?? String(delivery.quantity)} onChange={e => setReceiveDeliveryAmounts(current => ({ ...current, [delivery.id]: e.target.value }))}/></label><button type="button" className="primary" onClick={() => receiveIncomingDelivery(delivery)} disabled={saving}>{saving ? 'Registrerar…' : 'Registrera mottaget'}</button></div></div>)}</div>}{displayedSoldQuantity(selected) > 0 && <p className="muted sold-total"><strong>Sålda totalt:</strong> {displayedSoldQuantity(selected)} st</p>}
 
       </div>
       )}
@@ -2078,6 +2119,8 @@ export default function App() {
       <p className="muted">Om du ökar antalet kontrollerar systemet att tillräckligt många maskiner är lediga. Ändringen sparas i maskinhistoriken.</p>
       <button className="primary wide" disabled={saving}>{saving ? 'Sparar…' : 'Spara ändringar'}</button>{error && <p className="error">{error}</p>}
     </form></section></div>}
+
+    {showStockOrder && selected && <div className="overlay" onClick={() => !saving && setShowStockOrder(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setShowStockOrder(false)} disabled={saving}><X /></button><p className="eyebrow">LAGERPÅFYLLNING</p><h2>Beställ produkt</h2><p className="muted">{selected.brand} {selected.model} · {selected.article_code ? `Artikelkod ${selected.article_code}` : selected.machine_number || 'Artikelkod saknas'}</p><form className="machine-form" onSubmit={createStockReplenishmentOrder}><label className="full">Antal att beställa<input type="number" min="1" step="1" value={newDelivery.quantity} onChange={e => setNewDelivery(current => ({ ...current, quantity: e.target.value }))} required /></label><label>ETA år<input type="number" min="2020" max="2100" value={newDelivery.eta_year} onChange={e => setNewDelivery(current => ({ ...current, eta_year: e.target.value }))} required /></label><label>ETA vecka<input type="number" min="1" max="53" value={newDelivery.eta_week} onChange={e => setNewDelivery(current => ({ ...current, eta_week: e.target.value }))} required /></label><p className="muted full">Beställningen kopplas till den befintliga produkten och registreras som lagerpåfyllning. Lagret ökar först när leveransen tas emot. Ingen kundorder eller försäljning skapas.</p>{error && <p className="error full">{error}</p>}<button className="primary wide" disabled={saving}>{saving ? 'Registrerar beställning…' : 'Registrera beställning'}</button></form></section></div>}
 
     {showDirectSaleForm && selected && <div className="overlay" onClick={() => { if (!saving) { setShowDirectSaleForm(false); setOverstockConfirmed(false); } }}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => { setShowDirectSaleForm(false); setOverstockConfirmed(false); }} disabled={saving}><X /></button><p className="eyebrow">REGISTRERA FÖRSÄLJNING</p><h2>Kunduppgifter</h2><p className="muted">{selected.brand} {selected.model} · {saleQuantity} st</p><form className="machine-form" onSubmit={e => { e.preventDefault(); markSold(null, overstockConfirmed); }}>
       <label className="full">Kundens namn<input value={directSaleForm.customer_name} onChange={e => setDirectSaleForm({ ...directSaleForm, customer_name: e.target.value })} required placeholder="Ange kundens namn" /></label>
