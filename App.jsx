@@ -1773,7 +1773,7 @@ export default function App() {
         <div className="deleted-machines-content">
           {releaseNotes.length === 0 ? <p className="muted">Inga versioner registrerade ännu.</p> : releaseNotes.map(note => <article className="history-item" key={note.id}><strong>{note.title}</strong><small>{new Date(note.release_date + 'T12:00:00').toLocaleDateString('sv-SE')}</small><p style={{whiteSpace:'pre-wrap'}}>{note.changes}</p></article>)}
         </div>
-      </details></div></section>}</> : <>
+      </details></section>}</> : <>
     <section className="hero"><div><p className="eyebrow">MASKINÖVERSIKT</p><h1>Maskiner</h1><p className="muted">Lager, inkommande maskiner och försäljning på ett ställe.</p></div><button className="primary add-btn" onClick={() => { setShowAdd(true); setForm(emptyForm); setMachineTemplateId(''); setAddDeliveries([]); setNewDelivery(emptyDelivery()); setError(''); }}><Plus size={18} /> Lägg till maskin</button></section>
     <section className="toolbar"><div className="search"><Search size={18} /><input placeholder="Sök maskinnummer, fabrikat eller modell…" value={search} onChange={e => setSearch(e.target.value)} /></div></section>
     <section className="stats">
