@@ -57,6 +57,7 @@ export default function App() {
   const [saleQuantity, setSaleQuantity] = useState('1');
   const [showSaleForm, setShowSaleForm] = useState(false);
   const [saleReservation, setSaleReservation] = useState(null);
+  const [saleFromExternalReservation, setSaleFromExternalReservation] = useState(false);
   const [saleHistory, setSaleHistory] = useState([]);
   const [saleForm, setSaleForm] = useState({ customer_name: '', customer_company: '', customer_phone: '', customer_email: '', sale_date: new Date().toLocaleDateString('sv-SE'), quantity: '1', note: '' });
   const [loading, setLoading] = useState(false);
@@ -1416,11 +1417,28 @@ export default function App() {
       setError('Öppna kundreservationen från Reserverade innan du säljer från den.'); return;
     }
     setSaleReservation(reservation);
+    setSaleFromExternalReservation(false);
     setSaleForm({
       customer_name: reservation?.customer_name || '', customer_company: reservation?.customer_company || '',
       customer_phone: reservation?.customer_phone || '', customer_email: reservation?.customer_email || '',
       sale_date: new Date().toLocaleDateString('sv-SE'),
       quantity: saleQuantity || '1', note: reservation?.customer_note || ''
+    });
+    setShowSaleForm(true); setError('');
+  }
+
+  function markSoldExternalReservation() {
+    if (!selected || Number(selected.external_reserved_quantity || 0) < 1) {
+      setError('Det finns inget externt reserverat antal att sälja.');
+      return;
+    }
+    setSaleReservation(null);
+    setSaleFromExternalReservation(true);
+    setSaleForm({
+      customer_name: '', customer_company: '', customer_phone: '', customer_email: '',
+      sale_date: new Date().toLocaleDateString('sv-SE'),
+      quantity: String(Math.min(Math.max(1, Number.parseInt(saleQuantity, 10) || 1), Number(selected.external_reserved_quantity || 0))),
+      note: ''
     });
     setShowSaleForm(true); setError('');
   }
@@ -1432,15 +1450,18 @@ export default function App() {
     if (!Number.isInteger(amount) || amount < 1) { setError('Ange ett giltigt antal att sälja.'); return; }
     if (!saleForm.customer_name.trim() || !saleForm.customer_phone.trim()) { setError('Kundnamn och telefonnummer måste anges.'); return; }
     setSaving(true); setError('');
-    const { error: saleError } = await supabase.rpc('record_machine_sale', {
+    const saleRpc = saleFromExternalReservation ? 'record_external_reserved_machine_sale' : 'record_machine_sale';
+    const saleArgs = {
       p_machine_id: selected.id, p_quantity: amount, p_customer_name: saleForm.customer_name.trim(),
       p_customer_phone: saleForm.customer_phone.trim(), p_customer_company: saleForm.customer_company || null,
       p_customer_email: saleForm.customer_email || null, p_sale_date: saleForm.sale_date || null,
-      p_note: saleForm.note || null, p_reservation_id: saleReservation?.id || null
-    });
+      p_note: saleForm.note || null
+    };
+    if (!saleFromExternalReservation) saleArgs.p_reservation_id = saleReservation?.id || null;
+    const { error: saleError } = await supabase.rpc(saleRpc, saleArgs);
     if (saleError) setError('Försäljningen kunde inte registreras: ' + saleError.message);
     else {
-      setShowSaleForm(false); setSaleReservation(null); setSaleQuantity('1');
+      setShowSaleForm(false); setSaleReservation(null); setSaleFromExternalReservation(false); setSaleQuantity('1');
       await Promise.all([loadMachines(), loadReservations()]);
       await loadMachineDetails(selected, selectedReservationId);
     }
@@ -2030,7 +2051,8 @@ export default function App() {
       {!isSoldContext && <>
       <div className="reservation-info inventory-summary"><h3>Försäljning och reservationer</h3>{isReservationContext && <p className="muted">Du hanterar kundreservationer. Här kan du sälja från eller avboka reservationerna.</p>}<p>Fysiskt i lager: <strong>{Number(selected.stock_quantity ?? 1)} st</strong></p><p>Reserverat enligt artikelregistret: <strong>{Number(selected.external_reserved_quantity || 0)} st</strong></p><p>Kundreservationer i appen: <strong>{activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)} st</strong></p><p>Reserverat totalt: <strong>{(Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0))} st</strong></p><p>Tillgängliga: <strong>{Math.max(0, Number(selected.stock_quantity ?? 1) - (Number(selected.external_reserved_quantity || 0) + activeReservations.reduce((n, r) => n + Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)), 0)))} st</strong></p>
       {isReservationContext && detailReservations.length > 0 && <><h3>{selectedReservationId !== null ? 'Vald reservation' : 'Aktiva reservationer'}</h3>{detailReservations.map(r => { const remaining = Math.max(0, Number(r.quantity || 1) - Number(r.fulfilled_quantity || 0)); return <div className="history-item reservation-row" key={r.id}><strong>{r.customer_name}</strong><small>{remaining} st kvar att leverera · {date(r.reservation_date)}</small>{r.reservation_end_date && <div className="reservation-deadline detail-deadline"><CalendarDays size={16}/><span><strong>RESERVERAD TILL OCH MED</strong><b>{date(r.reservation_end_date)}</b></span></div>}<button onClick={() => openEditReservation(r)} disabled={saving}>Redigera reservation</button><label className="full">Antal att sälja från reservation<input type="number" min="1" max={remaining} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={() => markSold(r.id)} disabled={saving}>Sälj från reservation</button><button onClick={() => cancelReservation(r.id)} disabled={saving}><Ban size={16} /> Avboka återstående antal</button></div>; })}</>}
-      {isReservationContext && detailReservations.length === 0 && <p className="muted">Den här reservationen är avslutad eller avbokad. Uppdatera reservationerna för aktuell status.</p>}
+      {isReservationContext && detailReservations.length === 0 && Number(selected.external_reserved_quantity || 0) > 0 && <div className="history-item reservation-row"><strong>Extern reservation från artikelregistret</strong><small>{Number(selected.external_reserved_quantity || 0)} st reserverade enligt artikelregistret från Jörgens lagerunderlag.</small><label className="full">Antal att sälja från extern reservation<input type="number" min="1" max={Number(selected.external_reserved_quantity || 0)} value={saleQuantity} onChange={e => setSaleQuantity(e.target.value)} /></label><button className="primary" onClick={markSoldExternalReservation} disabled={saving}>Sälj från extern reservation</button><p className="muted">Vid försäljning minskas både fysiskt lager och externt reserverat antal. Återförs försäljningen återställs båda.</p></div>}
+      {isReservationContext && detailReservations.length === 0 && Number(selected.external_reserved_quantity || 0) <= 0 && <p className="muted">Det finns ingen aktiv kundreservation eller extern reservation på den här maskinen.</p>}
       </div>
       </>}
       {!isReservationContext && !isSoldContext && filter !== 'incoming' && <div className="stock-actions">
@@ -2047,21 +2069,21 @@ export default function App() {
 
       </div>
       )}
-      {(isSoldContext || saleHistory.length > 0) && <section className="stock-actions sold-actions"><h4>Försäljningshistorik</h4><p className="muted">Sålda totalt i lagersaldot: <strong>{Number(selected.sold_quantity || 0)} st</strong></p>{saleHistory.length === 0 ? <><p className="muted">Inga registrerade kundförsäljningar ännu.</p>{Number(selected.sold_quantity || 0) > 0 && <><p className="muted">Det finns äldre försäljningar från innan kundhistoriken infördes.</p><button type="button" onClick={restoreSoldMachine} disabled={saving}>Återför 1 äldre såld enhet</button></>}</> : saleHistory.map(sale => <div className="history-item" key={sale.id}><strong>{sale.customer_name} · {sale.quantity} st</strong><small>{date(sale.sale_date)} · {sale.customer_phone}{sale.customer_company ? ` · ${sale.customer_company}` : ''}</small>{sale.customer_email && <small>{sale.customer_email}</small>}{sale.note && <small>{sale.note}</small>}<small>Registrerad av: {profiles.find(p => p.id === sale.sold_by)?.full_name || 'Användare'}</small><small>{sale.status === 'reversed' ? 'ÅTERFÖRD' : 'GENOMFÖRD'}</small>{sale.status === 'completed' && <button type="button" onClick={() => reverseMachineSale(sale)} disabled={saving}>Återför denna försäljning</button>}</div>)}</section>}
+      {(isSoldContext || saleHistory.length > 0) && <section className="stock-actions sold-actions"><h4>Försäljningshistorik</h4><p className="muted">Sålda totalt i lagersaldot: <strong>{Number(selected.sold_quantity || 0)} st</strong></p>{saleHistory.length === 0 ? <><p className="muted">Inga registrerade kundförsäljningar ännu.</p>{Number(selected.sold_quantity || 0) > 0 && <><p className="muted">Det finns äldre försäljningar från innan kundhistoriken infördes.</p><button type="button" onClick={restoreSoldMachine} disabled={saving}>Återför 1 äldre såld enhet</button></>}</> : saleHistory.map(sale => <div className="history-item" key={sale.id}><strong>{sale.customer_name} · {sale.quantity} st</strong><small>{date(sale.sale_date)} · {sale.customer_phone}{sale.customer_company ? ` · ${sale.customer_company}` : ''}</small>{sale.customer_email && <small>{sale.customer_email}</small>}{sale.note && <small>{sale.note}</small>}<small>Registrerad av: {profiles.find(p => p.id === sale.sold_by)?.full_name || 'Användare'}</small><small>{sale.reservation_source === 'external_reservation' ? 'Från extern reservation' : sale.reservation_source === 'app_reservation' ? 'Från kundreservation i appen' : 'Från tillgängligt lager'}</small><small>{sale.status === 'reversed' ? 'ÅTERFÖRD' : 'GENOMFÖRD'}</small>{sale.status === 'completed' && <button type="button" onClick={() => reverseMachineSale(sale)} disabled={saving}>Återför denna försäljning</button>}</div>)}</section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
       <div className="detail-section"><button type="button" className="admin-refresh-button" onClick={() => setShowMachineHistory(value => !value)}><History size={18} /> {showMachineHistory ? 'Dölj historik' : 'Visa historik'}</button>{showMachineHistory && <div className="machine-history-list"><h3>Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong>{(h.new_data?.customer_name || h.old_data?.customer_name) && <small>{h.new_data?.customer_name || h.old_data?.customer_name}{(h.new_data?.quantity || h.old_data?.quantity) ? ` · ${h.new_data?.quantity || h.old_data?.quantity} st` : ''}{(h.new_data?.customer_phone || h.old_data?.customer_phone) ? ` · ${h.new_data?.customer_phone || h.old_data?.customer_phone}` : ''}</small>}<small>{dateTime(h.created_at)} · {profiles.find(p => p.id === h.user_id)?.full_name || 'Användare'}</small></div>)}</div>}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
     </section></div>}
 
-    {showSaleForm && selected && <div className="overlay" onClick={() => !saving && setShowSaleForm(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setShowSaleForm(false)} disabled={saving}><X /></button><p className="eyebrow">NY FÖRSÄLJNING</p><h2>{saleReservation ? 'Slutför reservation' : 'Registrera försäljning'}</h2><p className="muted">{selected.brand} {selected.model} · {saleReservation ? `Reservation för ${saleReservation.customer_name}` : 'Försäljning från tillgängligt lager'}</p><form className="machine-form" onSubmit={submitMachineSale}>
+    {showSaleForm && selected && <div className="overlay" onClick={() => !saving && setShowSaleForm(false)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setShowSaleForm(false)} disabled={saving}><X /></button><p className="eyebrow">NY FÖRSÄLJNING</p><h2>{saleReservation ? 'Slutför reservation' : saleFromExternalReservation ? 'Sälj extern reservation' : 'Registrera försäljning'}</h2><p className="muted">{selected.brand} {selected.model} · {saleReservation ? `Reservation för ${saleReservation.customer_name}` : saleFromExternalReservation ? 'Försäljning från extern reservation i artikelregistret' : 'Försäljning från tillgängligt lager'}</p><form className="machine-form" onSubmit={submitMachineSale}>
       <label className="full">Kundens namn<input value={saleForm.customer_name} onChange={e => setSaleForm(v => ({...v,customer_name:e.target.value}))} required /></label>
       <label className="full">Företag (valfritt)<input value={saleForm.customer_company} onChange={e => setSaleForm(v => ({...v,customer_company:e.target.value}))} /></label>
       <label className="full">Telefonnummer<input type="tel" value={saleForm.customer_phone} onChange={e => setSaleForm(v => ({...v,customer_phone:e.target.value}))} required /></label>
       <label className="full">E-post (valfritt)<input type="email" value={saleForm.customer_email} onChange={e => setSaleForm(v => ({...v,customer_email:e.target.value}))} /></label>
       <label className="full">Försäljningsdatum<input type="date" value={saleForm.sale_date} onChange={e => setSaleForm(v => ({...v,sale_date:e.target.value}))} required /></label>
-      <label className="full">Antal<input type="number" min="1" max={saleReservation ? Math.max(1,Number(saleReservation.quantity||1)-Number(saleReservation.fulfilled_quantity||0)) : Math.max(1,Number(selected.stock_quantity||0)-Number(selected.external_reserved_quantity||0)-activeReservations.reduce((n,r)=>n+Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)),0))} value={saleForm.quantity} onChange={e => setSaleForm(v => ({...v,quantity:e.target.value}))} required /></label>
+      <label className="full">Antal<input type="number" min="1" max={saleReservation ? Math.max(1,Number(saleReservation.quantity||1)-Number(saleReservation.fulfilled_quantity||0)) : saleFromExternalReservation ? Math.max(1,Number(selected.external_reserved_quantity||0)) : Math.max(1,Number(selected.stock_quantity||0)-Number(selected.external_reserved_quantity||0)-activeReservations.reduce((n,r)=>n+Math.max(0,Number(r.quantity||1)-Number(r.fulfilled_quantity||0)),0))} value={saleForm.quantity} onChange={e => setSaleForm(v => ({...v,quantity:e.target.value}))} required /></label>
       <label className="full">Anteckning (valfritt)<textarea rows={2} value={saleForm.note} onChange={e => setSaleForm(v => ({...v,note:e.target.value}))} /></label>
-      <p className="muted">{saleReservation ? 'Kunduppgifterna är hämtade från reservationen och kan justeras innan försäljningen registreras.' : 'Försäljningen dras från tillgängligt fysiskt lager. Inkommande leveranser påverkar inte lagersaldot.'}</p>
+      <p className="muted">{saleReservation ? 'Kunduppgifterna är hämtade från reservationen och kan justeras innan försäljningen registreras.' : saleFromExternalReservation ? 'Försäljningen minskar både fysiskt lager och externt reserverat antal. Inkommande leveranser påverkar inte lagersaldot.' : 'Försäljningen dras från tillgängligt fysiskt lager. Inkommande leveranser påverkar inte lagersaldot.'}</p>
       <button className="primary wide" disabled={saving}>{saving ? 'Registrerar…' : 'Bekräfta försäljning'}</button>{error && <p className="error">{error}</p>}</form></section></div>}
 
     {editingReservation && selected && <div className="overlay" onClick={() => !saving && setEditingReservation(null)}><section className="dialog" onClick={e => e.stopPropagation()}><button className="close" onClick={() => !saving && setEditingReservation(null)} disabled={saving}><X /></button><p className="eyebrow">REDIGERA RESERVATION</p><h2>Ändra kundreservation</h2><p className="muted">{selected.brand} {selected.model} · {selected.machine_number || 'Utan maskinnummer'}</p><form className="machine-form" onSubmit={saveReservationEdit}>
