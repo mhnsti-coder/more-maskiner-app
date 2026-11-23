@@ -35,6 +35,7 @@ export default function App() {
   const [sellerPreviewMode, setSellerPreviewMode] = useState(false);
   const [machines, setMachines] = useState([]);
   const [reorderNeeds, setReorderNeeds] = useState([]);
+  const [reorderSales, setReorderSales] = useState([]);
   const [reorderQuantityEdits, setReorderQuantityEdits] = useState({});
   const [profiles, setProfiles] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
@@ -480,6 +481,12 @@ export default function App() {
       const { data: reorderRows, error: reorderError } = await supabase.from('machine_reorder_needs').select('*').eq('status', 'open').gt('order_quantity', 0).order('created_at', { ascending: false });
       if (reorderError) { setError('Maskinerna kunde hämtas, men beställningsbehov kunde inte hämtas: ' + reorderError.message); setLoading(false); return; }
       setReorderNeeds(reorderRows || []);
+      const linkedSaleIds = (reorderRows || []).map(row => row.sale_id).filter(Boolean);
+      if (linkedSaleIds.length) {
+        const { data: linkedSales, error: linkedSalesError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, sale_date, quantity, note, status').in('id', linkedSaleIds).order('created_at', { ascending: false });
+        if (linkedSalesError) setError('Beställningsbehov kunde hämtas, men kunduppgifterna kunde inte hämtas: ' + linkedSalesError.message);
+        setReorderSales(linkedSales || []);
+      } else setReorderSales([]);
       const { data: deliveryRows, error: deliveryError } = await supabase.from('machine_incoming_deliveries').select('machine_id, quantity');
       if (deliveryError) { setError('Maskinerna kunde hämtas, men inkommande leveranser kunde inte hämtas: ' + deliveryError.message); setLoading(false); return; }
       const incomingByMachine = {};
@@ -871,12 +878,28 @@ export default function App() {
 
   useEffect(() => { if (session) { loadMachines(); loadProfiles(); loadAnnouncements(); loadPrivateConversations(); loadReservations(true); loadHomeNotices(); } }, [session?.user?.id]);
 
+  const groupedReorderNeeds = useMemo(() => {
+    const groups = new Map();
+    reorderNeeds.forEach(need => {
+      if (!groups.has(need.machine_id)) groups.set(need.machine_id, { machine_id: need.machine_id, rows: [], order_quantity: 0, sold_quantity: 0, stock_used: 0, incoming_covered: 0, sales: [] });
+      const group = groups.get(need.machine_id);
+      group.rows.push(need);
+      group.order_quantity += Number(need.order_quantity || 0);
+      group.sold_quantity += Number(need.sold_quantity || 0);
+      group.stock_used += Number(need.stock_used || 0);
+      group.incoming_covered += Number(need.incoming_covered || 0);
+      const sale = reorderSales.find(item => item.id === need.sale_id);
+      if (sale) group.sales.push(sale);
+    });
+    return [...groups.values()];
+  }, [reorderNeeds, reorderSales]);
+
   const filtered = useMemo(() => machines.filter(m => {
     const q = search.toLowerCase();
     const matches = [m.machine_number, m.article_code, m.brand, m.model].some(v => String(v || '').toLowerCase().includes(q));
-    const hasOpenReorder = reorderNeeds.some(n => n.machine_id === m.id);
+    const hasOpenReorder = groupedReorderNeeds.some(n => n.machine_id === m.id);
     return matches && (filter === 'all' || (filter === 'reorder' ? hasOpenReorder : filter === 'sold' ? displayedSoldQuantity(m) > 0 || m.status === 'sold' : filter === 'incoming' ? Number(m.incoming_quantity || 0) > 0 : filter === 'reserved' ? false : filter === 'in_stock' ? availableStock(m) > 0 : m.status === filter));
-  }), [machines, reorderNeeds, search, filter]);
+  }), [machines, groupedReorderNeeds, search, filter]);
 
   async function signIn(event) {
     event.preventDefault(); setError(''); setPasswordNotice('');
@@ -1312,29 +1335,34 @@ export default function App() {
     setStockEdit(String(nextStock)); setError(''); await refreshIncomingDeliveries(); await loadMachineDetails({ ...selected, stock_quantity: nextStock });
   }
 
-  async function saveReorderNeedQuantity(need) {
-    if (!need?.id) return;
-    const amount = Number.parseInt(reorderQuantityEdits[need.id] ?? need.order_quantity, 10);
-    if (!Number.isInteger(amount) || amount < 1) { setError('Ange minst 1 maskin att beställa.'); return; }
+  async function saveReorderNeedQuantity(group) {
+    if (!group?.machine_id) return;
+    const amount = Number.parseInt(reorderQuantityEdits[group.machine_id] ?? group.order_quantity, 10);
+    if (!Number.isInteger(amount) || amount < 1) { setError('Ange minst 1 produkt att beställa.'); return; }
     setSaving(true); setError('');
-    const { error } = await supabase.rpc('update_machine_reorder_need_quantity', { p_need_id: need.id, p_quantity: amount });
+    const { error } = await supabase.rpc('update_machine_reorder_group_quantity', { p_machine_id: group.machine_id, p_quantity: amount });
     if (error) setError('Beställningsantalet kunde inte sparas: ' + error.message);
-    else { setReorderQuantityEdits(current => { const next = { ...current }; delete next[need.id]; return next; }); await loadMachines(); }
+    else { setReorderQuantityEdits(current => { const next = { ...current }; delete next[group.machine_id]; return next; }); await loadMachines(); }
     setSaving(false);
   }
 
-  async function markReorderNeedOrdered(need) {
-    if (!need?.id) return;
-    const amount = Number.parseInt(reorderQuantityEdits[need.id] ?? need.order_quantity, 10);
-    if (!Number.isInteger(amount) || amount < 1) { setError('Ange minst 1 maskin att beställa.'); return; }
+  async function markReorderNeedOrdered(group) {
+    if (!group?.machine_id) return;
+    const amount = Number.parseInt(reorderQuantityEdits[group.machine_id] ?? group.order_quantity, 10);
+    if (!Number.isInteger(amount) || amount < 1) { setError('Ange minst 1 produkt att beställa.'); return; }
     if (!window.confirm(`Markera ${amount} st som beställda?`)) return;
     setSaving(true); setError('');
-    const quantityResult = amount !== Number(need.order_quantity) ? await supabase.rpc('update_machine_reorder_need_quantity', { p_need_id: need.id, p_quantity: amount }) : { error: null };
+    const quantityResult = amount !== Number(group.order_quantity) ? await supabase.rpc('update_machine_reorder_group_quantity', { p_machine_id: group.machine_id, p_quantity: amount }) : { error: null };
     if (quantityResult.error) setError('Beställningsantalet kunde inte sparas: ' + quantityResult.error.message);
     else {
-      const { error } = await supabase.rpc('mark_machine_reorder_need_ordered', { p_need_id: need.id });
-      if (error) setError('Beställningsbehovet kunde inte uppdateras: ' + error.message);
-      else { setReorderQuantityEdits(current => { const next = { ...current }; delete next[need.id]; return next; }); await loadMachines(); }
+      const openRows = group.rows.filter(row => Number(row.order_quantity || 0) > 0 || row.id === group.rows[0]?.id);
+      let markError = null;
+      for (const row of openRows) {
+        const { error } = await supabase.rpc('mark_machine_reorder_need_ordered', { p_need_id: row.id });
+        if (error && !markError) markError = error;
+      }
+      if (markError) setError('Beställningsbehovet kunde inte uppdateras: ' + markError.message);
+      else { setReorderQuantityEdits(current => { const next = { ...current }; delete next[group.machine_id]; return next; }); await loadMachines(); }
     }
     setSaving(false);
   }
@@ -1490,6 +1518,7 @@ export default function App() {
       .app-shell{width:100%;max-width:1200px;min-width:0;margin-left:auto;margin-right:auto;box-sizing:border-box;}
       .app-shell *{box-sizing:border-box;}
       /* Kundkortet i försäljningshistoriken ska vara tydligt avskilt från övrig maskininformation. */
+      .reorder-customer-list{margin-top:14px;padding-top:12px;border-top:1px solid #414141}.reorder-customer-list>strong{display:block;margin-bottom:8px;color:#eee;font-size:14px;}
       .sale-customer-card{display:flex;flex-direction:column;gap:7px;margin:12px 0;padding:15px;border:1px solid #6b3033;border-left:5px solid #e02b32;border-radius:12px;background:#251b1c;color:#f5f5f5;}
       .sale-customer-card .sale-customer-label{font-size:11px;font-weight:800;letter-spacing:.12em;color:#ff6268;}
       .sale-customer-card>strong{font-size:19px;line-height:1.3;color:#fff;}
@@ -1868,7 +1897,7 @@ export default function App() {
         { value: 'all', label: 'Produkter', count: machines.length, Icon: Package },
         { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
         { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + displayedSoldQuantity(m), 0), Icon: CheckCircle2 },
-        { value: 'reorder', label: 'Produkter att beställa', count: reorderNeeds.reduce((sum, n) => sum + Number(n.order_quantity || 0), 0), Icon: AlertCircle }
+        { value: 'reorder', label: 'Produkter att beställa', count: groupedReorderNeeds.reduce((sum, n) => sum + Number(n.order_quantity || 0), 0), Icon: AlertCircle }
       ].map(({ value, label, count, Icon }) => (
         <div
           key={value}
@@ -1890,7 +1919,7 @@ export default function App() {
       ))}
     </section>
 
-    {filter === 'reorder' && <section className="detail-section reorder-overview"><h2>Produkter att beställa</h2><p className="muted">Här visas produkter där fler exemplar har sålts än vad som fanns tillgängligt i lager. Antalet nedan är det som varken täcks av lagret eller produkter på väg hem och därför behöver beställas.</p>{reorderNeeds.length === 0 ? <p className="empty">Det finns inga öppna beställningsbehov.</p> : <div className="reorder-needs-list">{reorderNeeds.filter(n => !search.trim() || machines.some(m => m.id === n.machine_id && [m.machine_number,m.article_code,m.brand,m.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())))).map(need => { const machine = machines.find(m => m.id === need.machine_id); return <article className="reorder-need-card" key={need.id}><div><strong>{machine ? [machine.brand,machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{machine?.article_code ? `Artikelkod ${machine.article_code}` : machine?.machine_number || 'Maskinnummer saknas'}</p><small>Sålda: {need.sold_quantity} st · Saknas: {Math.max(0, Number(need.sold_quantity || 0) - Number(need.stock_used || 0))} st · På väg hem: {need.incoming_covered} st</small></div><div className="reorder-need-action"><div className="reorder-order-block"><strong className="reorder-order-heading">Att beställa:</strong><label className="reorder-quantity-label"><input aria-label="Att beställa antal" type="number" min="1" step="1" value={reorderQuantityEdits[need.id] ?? need.order_quantity} onChange={e => setReorderQuantityEdits(current => ({ ...current, [need.id]: e.target.value }))} /></label></div><button className="secondary" onClick={() => saveReorderNeedQuantity(need)} disabled={saving || Number(reorderQuantityEdits[need.id] ?? need.order_quantity) === Number(need.order_quantity)}>Spara antal</button><button className="primary" onClick={() => markReorderNeedOrdered(need)} disabled={saving}>Markera beställda</button></div></article>; })}</div>}</section>}
+    {filter === 'reorder' && <section className="detail-section reorder-overview"><h2>Produkter att beställa</h2><p className="muted">Beställningsbehov för samma produkt samlas här. Varje kundförsäljning visas separat så att kunduppgifterna följer med.</p>{groupedReorderNeeds.length === 0 ? <p className="empty">Det finns inga öppna beställningsbehov.</p> : <div className="reorder-needs-list">{groupedReorderNeeds.filter(group => !search.trim() || machines.some(m => m.id === group.machine_id && [m.machine_number,m.article_code,m.brand,m.model].some(v => String(v || '').toLowerCase().includes(search.toLowerCase())))).map(group => { const machine = machines.find(m => m.id === group.machine_id); return <article className="reorder-need-card" key={group.machine_id}><div><strong>{machine ? [machine.brand,machine.model].filter(Boolean).join(' ') : 'Produkt'}</strong><p className="muted">{machine?.article_code ? `Artikelkod ${machine.article_code}` : machine?.machine_number || 'Artikelnummer saknas'}</p><small>Sålda: {group.sold_quantity} st · Från lager: {group.stock_used} st · På väg hem: {group.incoming_covered} st</small>{group.sales.length > 0 && <div className="reorder-customer-list"><strong>Kundförsäljningar</strong>{group.sales.map(sale => <div className="history-item sale-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.65 : 1 }}><span className="sale-customer-label">KUNDUPPGIFTER</span><strong>{sale.customer_name || 'Kundnamn saknas'}{sale.status === 'reversed' ? ' · Återförd' : ''}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small>{sale.customer_company && <span>{sale.customer_company}</span>}{sale.customer_phone && <a href={'tel:' + sale.customer_phone}>{sale.customer_phone}</a>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}{sale.note && <p>{sale.note}</p>}</div>)}</div>}</div><div className="reorder-need-action"><div className="reorder-order-block"><strong className="reorder-order-heading">Att beställa:</strong><label className="reorder-quantity-label"><input aria-label="Att beställa antal" type="number" min="1" step="1" value={reorderQuantityEdits[group.machine_id] ?? group.order_quantity} onChange={e => setReorderQuantityEdits(current => ({ ...current, [group.machine_id]: e.target.value }))} /></label></div><button className="secondary" onClick={() => saveReorderNeedQuantity(group)} disabled={saving || Number(reorderQuantityEdits[group.machine_id] ?? group.order_quantity) === Number(group.order_quantity)}>Spara antal</button><button className="primary" onClick={() => markReorderNeedOrdered(group)} disabled={saving}>Markera beställda</button></div></article>; })}</div>}</section>}
 
     {error && <div className="error-banner">{error}</div>}
     {filter === 'reorder' || (filter === 'overview' && !search.trim()) ? null : loading ? <p className="empty">Hämtar maskiner…</p> : filtered.length === 0 ? <div className="empty"><Package size={34} /><h3>{filter === 'reorder' ? 'Inga produkter att beställa' : 'Inga produkter att visa'}</h3><p>{filter === 'reorder' ? 'Det finns inga öppna beställningsbehov just nu.' : 'Prova att ändra sökning eller filter, eller lägg till en produkt.'}</p></div> : <section className="machine-grid">{filtered.map(machine => <button className="machine-card" key={machine.id} onClick={() => loadMachineDetails(machine)}><div className="machine-photo">{machine.main_photo_url ? <img src={machine.main_photo_url} alt={`${machine.brand || ''} ${machine.model || 'Maskin'}`} /> : <Package size={36} />}<span className={'status ' + (availableStock(machine) > 0 ? 'in_stock' : Number(machine.incoming_quantity || 0) > 0 ? 'incoming' : 'out_of_stock')}>{availableStock(machine) > 0 ? `${availableStock(machine)} st i lager` : Number(machine.incoming_quantity || 0) > 0 ? `Slut i lager · ${Number(machine.incoming_quantity)} st på väg hem` : 'Slut i lager'}</span></div><div className="machine-info"><p className="machine-no">{machine.article_code ? `Artikelkod ${machine.article_code}` : (machine.machine_number || 'Inget artikelnummer')}</p><h3>{[machine.brand,machine.model].filter(Boolean).join(' ') || 'Produkt'}</h3><div className="details"><span>{machine.year || 'Årsmodell saknas'}</span><span>{machine.hours != null ? `${machine.hours.toLocaleString('sv-SE')} h` : 'Timmar saknas'}</span></div><div className="machine-quantity-summary"><span><strong>{availableStock(machine)}</strong><small>Lager</small></span><span><strong>{displayedSoldQuantity(machine)}</strong><small>Sålda</small></span></div>{Number(machine.incoming_quantity || 0) > 0 && <p className="incoming-note">På väg hem: <strong>{Number(machine.incoming_quantity)} st</strong></p>}<strong className="price">{machine.price != null ? `${Number(machine.price).toLocaleString('sv-SE')} kr exkl. moms` : 'Pris saknas'}</strong></div></button>)}</section>}
