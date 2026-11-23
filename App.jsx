@@ -4,13 +4,13 @@ import { Search, Plus, LogOut, LogIn, RefreshCw, X, Package, Clock3, CheckCircle
 
 const supabase = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
 const statusLabel = { in_stock: 'I lager', reserved: 'Såld', sold: 'Såld', incoming: 'På väg hem', mixed: 'I lager + på väg hem', mixed_reserved: 'I lager + såld' };
-const availableStock = machine => Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.external_reserved_quantity || 0));
+const availableStock = machine => Math.max(0, Number(machine.stock_quantity ?? 1) - Number(machine.external_reserved_quantity || 0) - Number(machine.pending_stock_reserved_quantity || 0));
 const displayedSoldQuantity = machine => Math.max(0, Number(machine.sold_quantity || 0) + Number(machine.external_reserved_quantity || 0));
 // Statusen beskriver fysiskt lager och inkommande leverans var för sig. Inkommande antal räknas aldrig som lager.
 const displayMachineStatus = machine => {
   const stock = Math.max(0, Number(machine.stock_quantity ?? 1));
   const reserved = Math.max(0, Number(machine.external_reserved_quantity || 0));
-  const available = Math.max(0, stock - reserved);
+  const available = Math.max(0, stock - reserved - Number(machine.pending_stock_reserved_quantity || 0));
   const incoming = Math.max(0, Number(machine.incoming_quantity || 0));
   if (available > 0 && incoming > 0) return 'mixed';
   if (available > 0) return 'in_stock';
@@ -481,10 +481,19 @@ export default function App() {
       setError(error.message);
     } else {
       const rows = data || [];
-      const { data: reorderRows, error: reorderError } = await supabase.from('machine_reorder_needs').select('*').eq('status', 'open').gt('order_quantity', 0).order('created_at', { ascending: false });
+      const { data: activeNeedRows, error: reorderError } = await supabase.from('machine_reorder_needs').select('*').in('status', ['open', 'ordered']).order('created_at', { ascending: false });
       if (reorderError) { setError('Maskinerna kunde hämtas, men beställningsbehov kunde inte hämtas: ' + reorderError.message); setLoading(false); return; }
-      setReorderNeeds(reorderRows || []);
-      const linkedSaleIds = (reorderRows || []).map(row => row.sale_id).filter(Boolean);
+      const linkedSaleIds = (activeNeedRows || []).map(row => row.sale_id).filter(Boolean);
+      let pendingSaleIds = new Set();
+      if (linkedSaleIds.length) {
+        const { data: pendingSales, error: pendingSalesError } = await supabase.from('machine_sales').select('id').in('id', linkedSaleIds).eq('status', 'pending');
+        if (pendingSalesError) { setError('Väntande kundorder kunde inte hämtas: ' + pendingSalesError.message); setLoading(false); return; }
+        pendingSaleIds = new Set((pendingSales || []).map(row => row.id));
+      }
+      const pendingReservedByMachine = {};
+      (activeNeedRows || []).forEach(row => { if (row.sale_id && pendingSaleIds.has(row.sale_id)) pendingReservedByMachine[row.machine_id] = (pendingReservedByMachine[row.machine_id] || 0) + Number(row.stock_used || 0); });
+      const reorderRows = (activeNeedRows || []).filter(row => row.status === 'open' && Number(row.order_quantity || 0) > 0);
+      setReorderNeeds(reorderRows);
       if (linkedSaleIds.length) {
         const { data: linkedSales, error: linkedSalesError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status').in('id', linkedSaleIds).order('created_at', { ascending: false });
         if (linkedSalesError) setError('Beställningsbehov kunde hämtas, men kunduppgifterna kunde inte hämtas: ' + linkedSalesError.message);
@@ -494,7 +503,7 @@ export default function App() {
       if (deliveryError) { setError('Maskinerna kunde hämtas, men inkommande leveranser kunde inte hämtas: ' + deliveryError.message); setLoading(false); return; }
       const incomingByMachine = {};
       (deliveryRows || []).forEach(d => { incomingByMachine[d.machine_id] = (incomingByMachine[d.machine_id] || 0) + Number(d.quantity || 0); });
-      const rowsWithIncoming = rows.map(m => ({ ...m, incoming_quantity: incomingByMachine[m.id] || 0 }));
+      const rowsWithIncoming = rows.map(m => ({ ...m, incoming_quantity: incomingByMachine[m.id] || 0, pending_stock_reserved_quantity: pendingReservedByMachine[m.id] || 0 }));
       // MÖRE använder inte längre kundreservationer i lageröversikten.
       // external_reserved_quantity kommer från artikelregistret och visas som sålt/orderlagt.
       const rowsWithReservations = rowsWithIncoming.map(m => ({ ...m, reserved_quantity: 0, app_reserved_quantity: 0, available_quantity: availableStock(m), displayed_sold_quantity: displayedSoldQuantity(m) }));
@@ -1040,6 +1049,15 @@ export default function App() {
     const { data: freshMachine, error: freshMachineError } = await supabase.from('machines').select('*').eq('id', machine.id).single();
     if (freshMachineError) { setError(freshMachineError.message); return; }
     machine = { ...machine, ...freshMachine };
+    const { data: activeNeeds, error: activeNeedsError } = await supabase.from('machine_reorder_needs').select('sale_id, stock_used').eq('machine_id', machine.id).in('status', ['open', 'ordered']);
+    if (activeNeedsError) setError('Kunde inte hämta reserverat lager för väntande kundorder: ' + activeNeedsError.message);
+    const activeSaleIds = (activeNeeds || []).map(row => row.sale_id).filter(Boolean);
+    let pendingIds = new Set();
+    if (activeSaleIds.length) {
+      const { data: pendingRows } = await supabase.from('machine_sales').select('id').in('id', activeSaleIds).eq('status', 'pending');
+      pendingIds = new Set((pendingRows || []).map(row => row.id));
+    }
+    machine.pending_stock_reserved_quantity = (activeNeeds || []).reduce((sum, row) => sum + (pendingIds.has(row.sale_id) ? Number(row.stock_used || 0) : 0), 0);
     setSelected(machine);
     setShowMachineHistory(false);
     setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setMachineSales([]); setMachinePhotos([]); setActiveReservations([]);
@@ -1342,29 +1360,21 @@ export default function App() {
     if (!selected) return;
     const amount = Number.parseInt(receiveDeliveryAmounts[delivery.id] || String(delivery.quantity), 10);
     if (!Number.isInteger(amount) || amount < 1 || amount > Number(delivery.quantity)) { setError(`Ange ett antal mellan 1 och ${delivery.quantity}.`); return; }
-    const isCustomerDelivery = Boolean(delivery.sale_id);
-    const remaining = Number(delivery.quantity) - amount;
-    const deliveryResult = remaining > 0
-      ? await supabase.from('machine_incoming_deliveries').update({ quantity: remaining }).eq('id', delivery.id)
-      : await supabase.from('machine_incoming_deliveries').delete().eq('id', delivery.id);
-    if (deliveryResult.error) { setError('Leveransen kunde inte registreras som mottagen: ' + deliveryResult.error.message); return; }
-
-    // Customer-linked deliveries are already counted as sold when the sale is registered.
-    // Receiving them fulfils the customer order; it must not add stock or count another sale.
-    const currentStock = Math.max(0, Number(selected.stock_quantity ?? 0));
-    const nextStock = isCustomerDelivery ? currentStock : currentStock + amount;
-    if (!isCustomerDelivery) {
-      const { error } = await supabase.from('machines').update({ stock_quantity: nextStock, status: 'in_stock' }).eq('id', selected.id);
-      if (error) { setError('Leveransen markerades, men lagersaldot kunde inte uppdateras: ' + error.message); return; }
-    }
-    await supabase.from('machine_history').insert({
-      machine_id: selected.id,
-      user_id: session?.user?.id,
-      action: isCustomerDelivery ? 'Kundleverans mottagen' : 'Lagerpåfyllning mottagen',
-      new_data: { delivery_id: delivery.id, sale_id: delivery.sale_id || null, quantity: amount, remaining_quantity: remaining }
+    setSaving(true); setError('');
+    const { data, error } = await supabase.rpc('receive_machine_incoming_delivery', {
+      p_delivery_id: delivery.id,
+      p_quantity: amount
     });
-    setSelected(current => current?.id === selected.id ? { ...current, stock_quantity: nextStock } : current);
-    setStockEdit(String(nextStock)); setError(''); await refreshIncomingDeliveries(); await loadMachineDetails({ ...selected, stock_quantity: nextStock });
+    if (error) {
+      setError('Leveransen kunde inte registreras som mottagen: ' + error.message);
+      setSaving(false);
+      return;
+    }
+    const completed = Boolean(data?.order_completed);
+    if (completed) alert('Hela kundordern är nu komplett och bokförd som såld.');
+    await loadMachines();
+    await loadMachineDetails(selected, selectedReservationId);
+    setSaving(false);
   }
 
   async function saveReorderNeedQuantity(group) {
