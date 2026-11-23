@@ -44,6 +44,7 @@ export default function App() {
   const [releaseNotes, setReleaseNotes] = useState([]);
   const [comments, setComments] = useState([]);
   const [history, setHistory] = useState([]);
+  const [machineSales, setMachineSales] = useState([]);
   const [showMachineHistory, setShowMachineHistory] = useState(false);
   const [machinePhotos, setMachinePhotos] = useState([]);
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -1014,16 +1015,18 @@ export default function App() {
     machine = { ...machine, ...freshMachine };
     setSelected(machine);
     setShowMachineHistory(false);
-    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setMachinePhotos([]); setActiveReservations([]);
-    const [c, h, r, p, d] = await Promise.all([
+    setStockEdit(String(machine.stock_quantity ?? 1)); setIncomingEdit(String(machine.incoming_quantity ?? 0)); setReceiveQuantity('1'); setNewDelivery(emptyDelivery()); setError(''); setComments([]); setHistory([]); setMachineSales([]); setMachinePhotos([]); setActiveReservations([]);
+    const [c, h, r, p, d, sales] = await Promise.all([
       supabase.from('comments').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('machine_history').select('*').eq('machine_id', machine.id).order('created_at', { ascending: false }),
       supabase.from('reservations').select('*').eq('machine_id', machine.id).eq('status', 'active').order('created_at', { ascending: false }),
       supabase.from('machine_photos').select('*').eq('machine_id', machine.id).order('created_at', { ascending: true }),
-      supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', machine.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false })
+      supabase.from('machine_incoming_deliveries').select('*').eq('machine_id', machine.id).order('eta_year', { ascending: true, nullsFirst: false }).order('eta_week', { ascending: true, nullsFirst: false }),
+      supabase.from('machine_sales').select('id, customer_name, customer_company, customer_phone, customer_email, sale_date, quantity, note, status, reversed_at, created_at').eq('machine_id', machine.id).order('created_at', { ascending: false })
     ]);
     if (c.error) setError(c.error.message); else setComments(c.data || []);
     if (h.error) setError(h.error.message); else setHistory(h.data || []);
+    if (sales.error) setError('Kunde inte hämta försäljningsuppgifter: ' + sales.error.message); else setMachineSales(sales.data || []);
     if (r.error) setError(r.error.message); else { const reservations = r.data || []; setActiveReservations(reservations); setSelected(current => current?.id === machine.id ? { ...current, reserved_quantity: 0, app_reserved_quantity: 0, available_quantity: availableStock(current), displayed_sold_quantity: displayedSoldQuantity(current) } : current); }
     if (p.error) setError('Kunde inte hämta maskinbilder: ' + p.error.message);
     else setMachinePhotos((p.data || []).map(photo => ({
@@ -1919,7 +1922,7 @@ export default function App() {
 
       </div>
       )}
-      {isSoldContext && displayedSoldQuantity(selected) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{displayedSoldQuantity(selected)} st</strong></p>{Number(selected.sold_quantity || 0) > 0 && <button onClick={restoreSoldMachine} disabled={saving}>Ångra fakturerad försäljning – återför 1 till lagret</button>}</section>}
+      {isSoldContext && displayedSoldQuantity(selected) > 0 && <section className="stock-actions sold-actions"><h4>Såld maskin</h4><p className="muted">Sålda totalt: <strong>{displayedSoldQuantity(selected)} st</strong></p><div className="machine-sales-list"><h4>Försäljningsuppgifter</h4>{machineSales.length === 0 ? <p className="muted">Inga kunduppgifter registrerade för försäljningen.</p> : machineSales.map(sale => <div className="history-item sale-customer-card" key={sale.id} style={{ opacity: sale.status === 'reversed' ? 0.6 : 1 }}><strong>{sale.customer_name || 'Kundnamn saknas'} {sale.status === 'reversed' ? '· Återförd' : ''}</strong><small>{sale.quantity} st · {date(sale.sale_date)}</small>{sale.customer_company && <span>{sale.customer_company}</span>}{sale.customer_phone && <a href={'tel:' + sale.customer_phone}>{sale.customer_phone}</a>}{sale.customer_email && <a href={'mailto:' + sale.customer_email}>{sale.customer_email}</a>}{sale.note && <p>{sale.note}</p>}</div>)}</div>{Number(selected.sold_quantity || 0) > 0 && <button onClick={restoreSoldMachine} disabled={saving}>Ångra fakturerad försäljning – återför 1 till lagret</button>}</section>}
       <div className="detail-section"><h3><MessageSquare size={18} /> Kommentarer</h3><form onSubmit={addComment} className="comment-form"><textarea placeholder="Skriv en kommentar om maskinen…" value={commentText} onChange={e => setCommentText(e.target.value)} required /><button className="primary" disabled={!commentText.trim()}><Send size={16} /> Skicka</button></form>{comments.length === 0 ? <p className="muted">Inga kommentarer ännu.</p> : comments.map(c => <div className="comment-item" key={c.id}><p>{c.message}</p><small>{dateTime(c.created_at)}</small></div>)}</div>
       <div className="detail-section"><button type="button" className="admin-refresh-button" onClick={() => setShowMachineHistory(value => !value)}><History size={18} /> {showMachineHistory ? 'Dölj historik' : 'Visa historik'}</button>{showMachineHistory && <div className="machine-history-list"><h3>Maskinhistorik</h3>{history.length === 0 ? <p className="muted">Ingen historik registrerad ännu.</p> : history.map(h => <div className="history-item" key={h.id}><strong>{h.action}</strong><small>{dateTime(h.created_at)}</small></div>)}</div>}</div>
       {isAdmin && <div className="detail-section"><button className="wide" style={{ background: "#8f2525", color: "white", border: "1px solid #8f2525" }} onClick={deleteMachine} disabled={deleteBusy}><Trash2 size={16} /> {deleteBusy ? 'Tar bort…' : 'Ta bort maskin'}</button></div>}
