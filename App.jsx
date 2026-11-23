@@ -497,11 +497,27 @@ export default function App() {
       (activeNeedRows || []).forEach(row => { if (row.sale_id && pendingSaleIds.has(row.sale_id)) pendingReservedByMachine[row.machine_id] = (pendingReservedByMachine[row.machine_id] || 0) + Number(row.stock_used || 0); });
       const reorderRows = (activeNeedRows || []).filter(row => row.status === 'open' && Number(row.order_quantity || 0) > 0);
       setReorderNeeds(reorderRows);
-      setPendingCustomerOrders((pendingOrderRows || []).map(sale => {
+      const pendingOrderGroups = new Map();
+      (pendingOrderRows || []).forEach(sale => {
         const need = (activeNeedRows || []).find(row => row.sale_id === sale.id);
         const machine = rows.find(row => row.id === sale.machine_id);
-        return { ...sale, machine, stock_used: Number(need?.stock_used || 0), incoming_covered: Number(need?.incoming_covered || 0), order_quantity: Number(need?.order_quantity || 0) };
-      }));
+        const orderKey = `${sale.machine_id}::${String(sale.customer_order_number || '').trim().toLowerCase() || sale.id}`;
+        const existing = pendingOrderGroups.get(orderKey);
+        const item = { ...sale, machine, stock_used: Number(need?.stock_used || 0), incoming_covered: Number(need?.incoming_covered || 0), order_quantity: Number(need?.order_quantity || 0) };
+        if (!existing) pendingOrderGroups.set(orderKey, { ...item, id: orderKey, source_sale_ids: [sale.id] });
+        else {
+          existing.quantity += Number(sale.quantity || 0);
+          existing.stock_used += item.stock_used;
+          existing.incoming_covered += item.incoming_covered;
+          existing.order_quantity += item.order_quantity;
+          existing.source_sale_ids.push(sale.id);
+          if (new Date(sale.created_at || sale.sale_date || 0) < new Date(existing.created_at || existing.sale_date || 0)) {
+            existing.sale_date = sale.sale_date;
+            existing.created_at = sale.created_at;
+          }
+        }
+      });
+      setPendingCustomerOrders(Array.from(pendingOrderGroups.values()));
       if (linkedSaleIds.length) {
         const { data: linkedSales, error: linkedSalesError } = await supabase.from('machine_sales').select('id, machine_id, customer_name, customer_company, customer_phone, customer_email, customer_order_number, sale_date, quantity, note, status').in('id', linkedSaleIds).order('created_at', { ascending: false });
         if (linkedSalesError) setError('Beställningsbehov kunde hämtas, men kunduppgifterna kunde inte hämtas: ' + linkedSalesError.message);
@@ -1969,7 +1985,7 @@ export default function App() {
         { value: 'all', label: 'Produkter', count: machines.length, Icon: Package },
         { value: 'incoming', label: 'På väg hem', count: machines.reduce((sum, m) => sum + Math.max(0, Number(m.incoming_quantity || 0)), 0), Icon: Package },
         { value: 'sold', label: 'Sålda', count: machines.reduce((sum, m) => sum + displayedSoldQuantity(m), 0), Icon: CheckCircle2 },
-        { value: 'pending', label: 'Väntande kundorder', count: pendingCustomerOrders.reduce((sum, order) => sum + Number(order.quantity || 0), 0), Icon: ClipboardList },
+        { value: 'pending', label: 'Väntande kundorder', count: pendingCustomerOrders.length, Icon: ClipboardList },
         { value: 'reorder', label: 'Produkter att beställa', count: groupedReorderNeeds.reduce((sum, n) => sum + Number(n.order_quantity || 0), 0), Icon: AlertCircle }
       ].map(({ value, label, count, Icon }) => (
         <div
